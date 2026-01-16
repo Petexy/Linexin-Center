@@ -18,6 +18,7 @@ import subprocess
 import os
 import signal
 import argparse
+import re
 
 from pathlib import Path
 
@@ -381,6 +382,11 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         self.active_widget_id = None
         self.translation_timer = None
         self.first_widget_loaded = False
+        
+        # [cite_start]Initialize debouncing variables [cite: 104]
+        self.selection_timeout_id = None
+        self.pending_widget_selection = None
+        
         global _global_lock_manager
         _global_lock_manager = CommandLockManager()
         _global_lock_manager.set_window(self)
@@ -422,7 +428,7 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
             
             # On Wayland, try using the window manager hints for centering
             # This may or may not work depending on the compositor
-            self.set_modal(True)   # Temporarily modal windows often get centered
+            self.set_modal(True)  # Temporarily modal windows often get centered
             GLib.timeout_add(100, lambda: self.set_modal(False))  # Remove modal after brief delay
             
             print(f"Window resize to {width}x{height} attempted")
@@ -533,11 +539,25 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
     
     def _create_persistent_widgets(self):
         """Create widgets that persist across UI rebuilds."""
-        # Main content display area
+        # Create stack for smooth widget transitions
+        self.widget_stack = Gtk.Stack()
+        self.widget_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_UP_DOWN)
+        self.widget_stack.set_transition_duration(300)  # 300ms animation
+        self.widget_stack.set_hexpand(True)
+        self.widget_stack.set_vexpand(True)
+        
+        # Add placeholder as initial stack child
+        placeholder = Gtk.Label(label=_("Select a widget from the sidebar"))
+        placeholder.set_vexpand(True)
+        placeholder.set_hexpand(True)
+        self.widget_stack.add_named(placeholder, "placeholder")
+        self.widget_stack.set_visible_child_name("placeholder")
+        
+        # Main content display area now contains the stack
         self.content_display = Adw.Bin()
         self.content_display.set_hexpand(True)
         self.content_display.set_vexpand(True)
-        self._show_placeholder_message()
+        self.content_display.set_child(self.widget_stack)
         
         # Widget list in sidebar
         self.widget_list = Gtk.ListBox()
@@ -990,13 +1010,9 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
     def _on_widget_selected(self, listbox, row):
         """Handle widget selection from the sidebar with debouncing."""
         # Block during command execution
-
-
         if getattr(self, 'is_command_locked', False):
             if not hasattr(row, 'widget_name'):
                 return
-                
-        
         
         # Cancel any pending selection
         if self.selection_timeout_id:
@@ -1082,6 +1098,54 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         # Clean the name for use as stack page identifier
         clean_name = name.lower().replace(' ', '_').replace('-', '_')
         return f"widget_{clean_name}"
+    
+    # -----------------------------------------------------------
+    # ADDED METHODS
+    # -----------------------------------------------------------
+
+    def _add_widget_to_stack(self, widget_instance, widget_name, stack_page_name):
+        """Add a widget to the stack with error handling."""
+        try:
+            # Check if already exists (double-check for race conditions)
+            if self.widget_stack.get_child_by_name(stack_page_name):
+                return  # Already added, skip
+                
+            if isinstance(widget_instance, Gtk.Widget):
+                # Direct GTK widget
+                self.widget_stack.add_named(widget_instance, stack_page_name)
+                
+            elif hasattr(widget_instance, 'get_widget'):
+                # Widget provides a method to get the GTK widget
+                try:
+                    gtk_widget = widget_instance.get_widget()
+                    self.widget_stack.add_named(gtk_widget, stack_page_name)
+                except Exception as e:
+                    # Add error widget to stack instead
+                    error_widget = self._create_error_widget(widget_name, str(e))
+                    self.widget_stack.add_named(error_widget, stack_page_name)
+            else:
+                # Widget cannot be displayed - create error widget
+                error_widget = self._create_error_widget(widget_name, _("Widget cannot be displayed"))
+                self.widget_stack.add_named(error_widget, stack_page_name)
+                
+        except Exception as e:
+            # Fallback error widget
+            error_widget = self._create_error_widget(widget_name, str(e))
+            try:
+                self.widget_stack.add_named(error_widget, stack_page_name)
+            except:
+                pass  # If even error widget fails, just skip
+
+    def _create_error_widget(self, widget_name, error_message):
+        """Create an error widget for display in stack."""
+        error_text = _("Error loading") + f" '{widget_name}': {error_message}"
+        error_label = Gtk.Label(label=error_text)
+        error_label.set_vexpand(True)
+        error_label.set_hexpand(True)
+        error_label.add_css_class("dim-label")
+        return error_label
+    
+    # -----------------------------------------------------------
 
     def _start_translation_monitoring(self):
         """Start continuous monitoring for dynamic text changes."""
@@ -1120,7 +1184,7 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
     def _on_widget_property_changed(self, widget, param_spec, widget_id):
         """Handle widget property changes for immediate translation."""
         # Only react to text-related property changes
-        if param_spec.name in ['label', 'text', 'placeholder-text', 'title']:
+        if param_spec.name in ['label', 'text', 'placeholder-text', 'title', 'subtitle']:
             GLib.idle_add(lambda: self._translate_single_widget(widget, widget_id))    
 
     def _monitor_widget_changes(self):
@@ -1194,13 +1258,27 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         ]
         
         for pattern in patterns_to_translate:
-            if pattern.replace("{}", "") in markup_text:
+            # Create regex from the pattern to handle cases where substring match fails
+            # e.g. "Updating {}..." -> "Updating (.*)..."
+            # This fixes issues where "Updating ..." (the replace result) is not found inside "Updating Linexin..."
+            escaped_pattern = re.escape(pattern)
+            regex_pattern = escaped_pattern.replace(re.escape("{}"), r"(.*)")
+            
+            # We want to match the whole line or segment
+            match = re.search(regex_pattern, markup_text)
+            
+            if match:
                 translated_pattern = _(pattern, widget_id)
                 if translated_pattern != pattern:
-                    # Replace the base text, preserving the formatting
-                    base_text = pattern.replace("{}", "")
-                    translated_base = translated_pattern.replace("{}", "")
-                    markup_text = markup_text.replace(base_text, translated_base)
+                    # If we have a match group (the variable part), reconstruct
+                    if match.groups():
+                        content = match.group(1)
+                        # Replace {} in the translated string with the captured content
+                        translated_text = translated_pattern.replace("{}", content)
+                        # Replace the whole matched part in the original text with translated version
+                        markup_text = markup_text.replace(match.group(0), translated_text)
+                    else:
+                        markup_text = markup_text.replace(match.group(0), translated_pattern)
         
         # Find text content between tags and standalone text (from original code)
         def replace_text(match):
@@ -1214,10 +1292,6 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
                     trailing_space = text_content[len(text_content.rstrip()):]
                     return leading_space + translated + trailing_space
             return text_content
-        
-        # Pattern to match text content (not inside tags)
-        # This handles text between > and < or at the start/end
-        pattern = r'>([^<]*)<|^([^<]*)<|>([^<]*)$'
         
         return markup_text
 
@@ -1258,6 +1332,20 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
                     if translated != placeholder:
                         widget.set_placeholder_text(translated)
             
+            # Adw.ActionRow / Adw.ExpanderRow (Translation Support Added)
+            elif isinstance(widget, Adw.ActionRow):
+                title = widget.get_title()
+                if title:
+                    translated = _(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
+                
+                subtitle = widget.get_subtitle()
+                if subtitle:
+                    translated = _(subtitle, widget_id)
+                    if translated != subtitle:
+                        widget.set_subtitle(translated)
+
             # Window title
             elif isinstance(widget, (Gtk.Window, Adw.ApplicationWindow)):
                 title = widget.get_title()
@@ -1273,160 +1361,6 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
             
         except Exception:
             pass  # Continue on error
-    
-    def do_close_request(self):
-        """Handle window close request."""
-        self._stop_translation_monitoring()
-        return False  # Allow window to close
-
-    def _create_persistent_widgets(self):
-        """Create widgets that persist across UI rebuilds."""
-        # Create stack for smooth widget transitions
-        self.widget_stack = Gtk.Stack()
-        self.widget_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_UP_DOWN)
-        self.widget_stack.set_transition_duration(300)  # 300ms animation
-        self.widget_stack.set_hexpand(True)
-        self.widget_stack.set_vexpand(True)
-        
-        # Add placeholder as initial stack child
-        placeholder = Gtk.Label(label=_("Select a widget from the sidebar"))
-        placeholder.set_vexpand(True)
-        placeholder.set_hexpand(True)
-        self.widget_stack.add_named(placeholder, "placeholder")
-        self.widget_stack.set_visible_child_name("placeholder")
-        
-        # Main content display area now contains the stack
-        self.content_display = Adw.Bin()
-        self.content_display.set_hexpand(True)
-        self.content_display.set_vexpand(True)
-        self.content_display.set_child(self.widget_stack)
-        
-        # Widget list in sidebar
-        self.widget_list = Gtk.ListBox()
-        self.widget_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.widget_list.add_css_class("navigation-sidebar")
-        self.widget_list.connect("row-activated", self._on_widget_selected)
-
-    def _on_widget_selected(self, listbox, row):
-        """Handle widget selection from the sidebar."""
-        if not hasattr(row, 'widget_name'):
-            return
-        
-        widget_name = row.widget_name
-        if widget_name not in self.loaded_widgets:
-            return
-        
-        # Stop monitoring previous widget
-        self._stop_translation_monitoring()
-        
-        # Get the widget instance
-        widget_instance = self.loaded_widgets[widget_name]
-        
-        # Store active widget info
-        self.active_widget = widget_instance
-        self.active_widget_id = self.widget_metadata.get(widget_name, {}).get('widget_id')
-        
-        # Create stack page name from widget name
-        stack_page_name = f"widget_{widget_name.lower().replace(' ', '_')}"
-        
-        # Check if widget is already in stack
-        existing_child = self.widget_stack.get_child_by_name(stack_page_name)
-        if existing_child is None:
-            # Add widget to stack if not already present
-            self._add_widget_to_stack(widget_instance, widget_name, stack_page_name)
-        
-        # Switch to the widget with animation
-        # Choose transition direction based on UI order
-        transition = None
-        prev_name = getattr(self, '_visible_widget_name', None)
-        if prev_name and prev_name in self.widget_index and widget_name in self.widget_index:
-            prev_idx = self.widget_index[prev_name]
-            curr_idx = self.widget_index[widget_name]
-            if curr_idx > prev_idx:
-                transition = Gtk.StackTransitionType.SLIDE_DOWN
-            elif curr_idx < prev_idx:
-                transition = Gtk.StackTransitionType.SLIDE_UP
-        if transition is not None:
-            self.widget_stack.set_visible_child_full(stack_page_name, transition)
-        else:
-            # Choose transition direction based on UI order
-            transition = None
-            prev_name = getattr(self, '_visible_widget_name', None)
-            if prev_name and prev_name in self.widget_index and widget_name in self.widget_index:
-                prev_idx = self.widget_index[prev_name]
-                curr_idx = self.widget_index[widget_name]
-                if curr_idx > prev_idx:
-                    transition = Gtk.StackTransitionType.SLIDE_DOWN
-                elif curr_idx < prev_idx:
-                    transition = Gtk.StackTransitionType.SLIDE_UP
-            if transition is not None:
-                self.widget_stack.set_visible_child_full(stack_page_name, transition)
-            else:
-                self.widget_stack.set_visible_child_name(stack_page_name)
-            self._visible_widget_name = widget_name
-        self._visible_widget_name = widget_name
-        
-        # Translate the widget's content if it has a widget_id
-        if self.active_widget_id and isinstance(widget_instance, Gtk.Widget):
-            self._translate_widget_content(widget_instance, self.active_widget_id)
-            # Connect to widget signals for immediate updates
-            self._connect_widget_signals(widget_instance, self.active_widget_id)
-        
-        # Start continuous translation monitoring (as backup)
-        self._start_translation_monitoring()
-        
-        # Update page title with translated name
-        display_name = row.display_name if hasattr(row, 'display_name') else widget_name
-        self.content_page.set_title(display_name)
-
-    def _add_widget_to_stack(self, widget_instance, widget_name, stack_page_name):
-        """Add a widget to the stack with error handling."""
-        try:
-            # Check if already exists (double-check for race conditions)
-            if self.widget_stack.get_child_by_name(stack_page_name):
-                return  # Already added, skip
-                
-            if isinstance(widget_instance, Gtk.Widget):
-                # Direct GTK widget
-                self.widget_stack.add_named(widget_instance, stack_page_name)
-                
-            elif hasattr(widget_instance, 'get_widget'):
-                # Widget provides a method to get the GTK widget
-                try:
-                    gtk_widget = widget_instance.get_widget()
-                    self.widget_stack.add_named(gtk_widget, stack_page_name)
-                except Exception as e:
-                    # Add error widget to stack instead
-                    error_widget = self._create_error_widget(widget_name, str(e))
-                    self.widget_stack.add_named(error_widget, stack_page_name)
-            else:
-                # Widget cannot be displayed - create error widget
-                error_widget = self._create_error_widget(widget_name, _("Widget cannot be displayed"))
-                self.widget_stack.add_named(error_widget, stack_page_name)
-                
-        except Exception as e:
-            # Fallback error widget
-            error_widget = self._create_error_widget(widget_name, str(e))
-            try:
-                self.widget_stack.add_named(error_widget, stack_page_name)
-            except:
-                pass  # If even error widget fails, just skip
-
-    def _create_error_widget(self, widget_name, error_message):
-        """Create an error widget for display in stack."""
-        error_text = _("Error loading") + f" '{widget_name}': {error_message}"
-        error_label = Gtk.Label(label=error_text)
-        error_label.set_vexpand(True)
-        error_label.set_hexpand(True)
-        error_label.add_css_class("dim-label")
-        return error_label
-
-    def _show_placeholder_message(self):
-        """Show placeholder message in content area - now handled by stack."""
-        # This method is no longer needed since placeholder is handled in stack
-        # But keeping it for compatibility - it will switch to placeholder page
-        self.widget_stack.set_visible_child_name("placeholder")
-
     
     def _on_button_layout_changed(self, settings, key):
         """Handle changes to window button layout from GNOME settings."""
@@ -1629,40 +1563,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-"""
-Example widget file to be placed in /usr/share/linexin/widgets/:
-========================================================================
-
-import gi
-gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk
-
-class MyCustomWidget(Gtk.Box):
-    def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        
-        # Required: Widget display name
-        self.widgetname = "My Custom Widget"
-        
-        # Optional: Widget icon (supports .svg, .png, .jpg, etc.)
-        self.widgeticon = "/usr/share/linexin/widgets/icons/my_widget.svg"
-        
-        # Widget content
-        self.set_margin_top(12)
-        self.set_margin_bottom(12)
-        self.set_margin_start(12)
-        self.set_margin_end(12)
-        
-        title = Gtk.Label(label="Welcome to My Custom Widget!")
-        title.add_css_class("title-2")
-        self.append(title)
-        
-        description = Gtk.Label(label="This is an example widget with a custom icon")
-        self.append(description)
-        
-        button = Gtk.Button(label="Click Me!")
-        button.set_halign(Gtk.Align.CENTER)
-        self.append(button)
-"""
