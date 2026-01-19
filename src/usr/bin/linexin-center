@@ -45,10 +45,77 @@ _original_call = subprocess.call
 _original_check_call = subprocess.check_call
 _original_check_output = subprocess.check_output
 
+# Store original MessageDialog functions
 _original_messagedialog_init = Adw.MessageDialog.__init__
 _original_messagedialog_set_heading = Adw.MessageDialog.set_heading
 _original_messagedialog_set_body = Adw.MessageDialog.set_body
 _original_messagedialog_add_response = Adw.MessageDialog.add_response
+_original_messagedialog_present = Adw.MessageDialog.present
+
+# Helper for pattern translation
+def _translate_with_patterns_helper(text, widget_id):
+    """
+    Helper function to translate text that might contain dynamic variables (placeholders).
+    Uses the localization manager to find matches.
+    """
+    if not text:
+        return ""
+
+    # 1. Try exact match first
+    translated = _(text, widget_id)
+    if translated != text:
+        return translated
+
+    # 2. Try pattern matching
+    # Add all patterns found in widgets here
+    patterns_to_translate = [
+        "Updating {}...",
+        "Process exited with code {}",
+        "Successfully updated your {}!",
+        "Installing {}...",
+        "Successfully installed {}!",
+        "Successfully installed {}",  #
+        "Successfully removed {}",    #
+        "Removing {}...",             #
+        "Removing {}",                #
+        "Please enter your password to {} this package.", #
+        "Please enter your password to {} this package",
+        "Building {}...",             #
+        "Removed {}",                 #
+        "Installed {}",               #
+        "Back to Search"              # Explicitly added just in case
+    ]
+    
+    for pattern in patterns_to_translate:
+        # Create regex from the pattern
+        # e.g. "Updating {}..." -> "Updating (.*)..."
+        escaped_pattern = re.escape(pattern)
+        regex_pattern = escaped_pattern.replace(re.escape("{}"), r"(.*)")
+        
+        # We want to match the whole string for plain text usually, but loose match works safer
+        match = re.search(regex_pattern, text)
+        
+        if match:
+            translated_pattern = _(pattern, widget_id)
+            if translated_pattern != pattern:
+                # If we have a match group (the variable part), reconstruct
+                if match.groups():
+                    content = match.group(1)
+                    
+                    # RECURSIVE TRANSLATION:
+                    # Translate the content itself (e.g., "install" inside the sentence)
+                    # This fixes "Please enter password to [install] package"
+                    translated_content = _translate_with_patterns_helper(content, widget_id)
+                    
+                    # Replace {} in the translated string with the translated content
+                    translated_text = translated_pattern.replace("{}", translated_content)
+                    return text.replace(match.group(0), translated_text)
+                else:
+                    return text.replace(match.group(0), translated_pattern)
+    
+    return text
+
+# --- MessageDialog Monkey Patches ---
 
 def _translated_messagedialog_init(self, **kwargs):
     """MessageDialog.__init__ wrapper that translates initial properties."""
@@ -59,10 +126,10 @@ def _translated_messagedialog_init(self, **kwargs):
     
     # Translate kwargs if they exist
     if 'heading' in kwargs and kwargs['heading'] and widget_id:
-        kwargs['heading'] = _(kwargs['heading'], widget_id)
+        kwargs['heading'] = _translate_with_patterns_helper(kwargs['heading'], widget_id)
     
     if 'body' in kwargs and kwargs['body'] and widget_id:
-        kwargs['body'] = _(kwargs['body'], widget_id)
+        kwargs['body'] = _translate_with_patterns_helper(kwargs['body'], widget_id)
     
     # Call original init
     _original_messagedialog_init(self, **kwargs)
@@ -74,28 +141,96 @@ def _translated_messagedialog_set_heading(self, heading):
     """MessageDialog.set_heading wrapper that translates the heading."""
     widget_id = getattr(self, '_translation_widget_id', None)
     if heading and widget_id:
-        heading = _(heading, widget_id)
+        heading = _translate_with_patterns_helper(heading, widget_id)
     _original_messagedialog_set_heading(self, heading)
 
 def _translated_messagedialog_set_body(self, body):
     """MessageDialog.set_body wrapper that translates the body text."""
     widget_id = getattr(self, '_translation_widget_id', None)
     if body and widget_id:
-        body = _(body, widget_id)
+        body = _translate_with_patterns_helper(body, widget_id)
     _original_messagedialog_set_body(self, body)
 
 def _translated_messagedialog_add_response(self, response_id, label):
     """MessageDialog.add_response wrapper that translates response labels."""
     widget_id = getattr(self, '_translation_widget_id', None)
     if label and widget_id:
-        label = _(label, widget_id)
+        label = _translate_with_patterns_helper(label, widget_id)
     _original_messagedialog_add_response(self, response_id, label)
 
-# Apply monkey patches for MessageDialog
+def _translated_messagedialog_present(self):
+    """
+    Wrapper for present() that forces a translation pass on the entire dialog tree.
+    This catches widgets added to extra_child (like PasswordEntry).
+    """
+    widget_id = getattr(self, '_translation_widget_id', None)
+    if widget_id:
+        # We need to access the helper from the window instance or just use a standalone helper
+        # Since _translate_single_widget is bound to the window class, we'll replicate the logic 
+        # specifically for the dialog tree here using a helper function.
+        _translate_recursive_standalone(self, widget_id)
+    
+    _original_messagedialog_present(self)
+
+def _translate_recursive_standalone(widget, widget_id):
+    """Standalone recursive translator for dialogs."""
+    try:
+        # 1. Translate the widget itself
+        _translate_widget_properties(widget, widget_id)
+        
+        # 2. Check for Adw.MessageDialog specific children
+        if isinstance(widget, Adw.MessageDialog):
+            extra = widget.get_extra_child()
+            if extra:
+                _translate_recursive_standalone(extra, widget_id)
+        
+        # 3. Standard Child Recursion
+        if hasattr(widget, 'get_first_child'):
+            child = widget.get_first_child()
+            while child:
+                _translate_recursive_standalone(child, widget_id)
+                child = child.get_next_sibling()
+        elif hasattr(widget, 'get_child'):
+            child = widget.get_child()
+            if child:
+                _translate_recursive_standalone(child, widget_id)
+                
+    except Exception as e:
+        print(f"Dialog translation error: {e}")
+
+def _translate_widget_properties(widget, widget_id):
+    """Translates properties of a single widget (Standalone version)."""
+    try:
+        if isinstance(widget, Gtk.Label):
+            text = widget.get_text()
+            if text:
+                translated = _translate_with_patterns_helper(text, widget_id)
+                if translated != text:
+                    widget.set_text(translated)
+        
+        elif isinstance(widget, Gtk.Button):
+            label = widget.get_label()
+            if label:
+                translated = _translate_with_patterns_helper(label, widget_id)
+                if translated != label:
+                    widget.set_label(translated)
+                    
+        elif isinstance(widget, (Gtk.Entry, Gtk.SearchEntry, Gtk.PasswordEntry)):
+            placeholder = widget.get_placeholder_text()
+            if placeholder:
+                translated = _translate_with_patterns_helper(placeholder, widget_id)
+                if translated != placeholder:
+                    widget.set_property("placeholder-text", translated)
+                    
+    except Exception:
+        pass
+
+# Apply monkey patches
 Adw.MessageDialog.__init__ = _translated_messagedialog_init
 Adw.MessageDialog.set_heading = _translated_messagedialog_set_heading
 Adw.MessageDialog.set_body = _translated_messagedialog_set_body
 Adw.MessageDialog.add_response = _translated_messagedialog_add_response
+Adw.MessageDialog.present = _translated_messagedialog_present
 
 # Global lock manager reference (will be set later)
 _global_lock_manager = None
@@ -383,7 +518,7 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         self.translation_timer = None
         self.first_widget_loaded = False
         
-        # [cite_start]Initialize debouncing variables [cite: 104]
+        # Initialize debouncing variables
         self.selection_timeout_id = None
         self.pending_widget_selection = None
         
@@ -604,7 +739,6 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         title = Gtk.Label(label=_("Linexin Center"))
         title.add_css_class("heading")
         header.set_title_widget(title)
-        
         
         # Add window controls if they're on the left side
         left_buttons, right_buttons = self._parse_button_layout()
@@ -1000,7 +1134,7 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         """Handle window close request."""
         # Block closing during command execution
         if getattr(self, 'is_command_locked', False):
-            return True  # Block close
+            return True # Block close
         
         # Clean up
         if hasattr(self, '_stop_translation_monitoring'):
@@ -1184,7 +1318,7 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
     def _on_widget_property_changed(self, widget, param_spec, widget_id):
         """Handle widget property changes for immediate translation."""
         # Only react to text-related property changes
-        if param_spec.name in ['label', 'text', 'placeholder-text', 'title', 'subtitle']:
+        if param_spec.name in ['label', 'text', 'placeholder-text', 'title', 'subtitle', 'description']:
             GLib.idle_add(lambda: self._translate_single_widget(widget, widget_id))    
 
     def _monitor_widget_changes(self):
@@ -1227,6 +1361,12 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         """Enhanced markup translation that handles both dynamic patterns and multiline descriptions."""
         import re
         
+        # 0. Try exact match translation first (Fixes Stability Warning)
+        # Often a whole markup string is in the dictionary
+        exact_match = _(markup_text, widget_id)
+        if exact_match != markup_text:
+            return exact_match
+
         # Handle multiline descriptions first (like the DaVinci installer description)
         if '\n' in markup_text and not any(tag in markup_text for tag in ['<span', '<b>', '<i>', '<u>']):
             # This is likely a plain multiline text, translate line by line
@@ -1248,37 +1388,8 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
             translated_failed = _("Installation failed: ", widget_id)
             markup_text = markup_text.replace("Installation failed: ", translated_failed)
         
-        # Handle other common patterns from the dictionary
-        patterns_to_translate = [
-            "Updating {}...",
-            "Process exited with code {}",
-            "Successfully updated your {}!",
-            "Installing {}...",
-            "Successfully installed {}!"
-        ]
-        
-        for pattern in patterns_to_translate:
-            # Create regex from the pattern to handle cases where substring match fails
-            # e.g. "Updating {}..." -> "Updating (.*)..."
-            # This fixes issues where "Updating ..." (the replace result) is not found inside "Updating Linexin..."
-            escaped_pattern = re.escape(pattern)
-            regex_pattern = escaped_pattern.replace(re.escape("{}"), r"(.*)")
-            
-            # We want to match the whole line or segment
-            match = re.search(regex_pattern, markup_text)
-            
-            if match:
-                translated_pattern = _(pattern, widget_id)
-                if translated_pattern != pattern:
-                    # If we have a match group (the variable part), reconstruct
-                    if match.groups():
-                        content = match.group(1)
-                        # Replace {} in the translated string with the captured content
-                        translated_text = translated_pattern.replace("{}", content)
-                        # Replace the whole matched part in the original text with translated version
-                        markup_text = markup_text.replace(match.group(0), translated_text)
-                    else:
-                        markup_text = markup_text.replace(match.group(0), translated_pattern)
+        # Use common pattern helper
+        markup_text = _translate_with_patterns_helper(markup_text, widget_id)
         
         # Find text content between tags and standalone text (from original code)
         def replace_text(match):
@@ -1293,7 +1404,8 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
                     return leading_space + translated + trailing_space
             return text_content
         
-        return markup_text
+        # Only translate text strictly between tags (>...<)
+        return re.sub(r'>([^<]+)<', replace_text, markup_text)
 
     def _translate_single_widget(self, widget, widget_id):
         """Translate text in a single widget."""
@@ -1312,7 +1424,8 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
                     # Regular text
                     text = widget.get_text()
                     if text:
-                        translated = _(text, widget_id)
+                        # Use pattern helper for plain text too
+                        translated = _translate_with_patterns_helper(text, widget_id)
                         if translated != text:
                             widget.set_text(translated)
             
@@ -1320,15 +1433,16 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
             elif isinstance(widget, Gtk.Button):
                 label = widget.get_label()
                 if label:
-                    translated = _(label, widget_id)
+                    # Use pattern helper for buttons
+                    translated = _translate_with_patterns_helper(label, widget_id)
                     if translated != label:
                         widget.set_label(translated)
             
             # Gtk.Entry / Gtk.SearchEntry
-            elif isinstance(widget, (Gtk.Entry, Gtk.SearchEntry)):
+            elif isinstance(widget, (Gtk.Entry, Gtk.SearchEntry, Gtk.PasswordEntry)):
                 placeholder = widget.get_placeholder_text()
                 if placeholder:
-                    translated = _(placeholder, widget_id)
+                    translated = _translate_with_patterns_helper(placeholder, widget_id)
                     if translated != placeholder:
                         widget.set_placeholder_text(translated)
             
@@ -1336,15 +1450,29 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
             elif isinstance(widget, Adw.ActionRow):
                 title = widget.get_title()
                 if title:
-                    translated = _(title, widget_id)
+                    translated = _translate_with_patterns_helper(title, widget_id)
                     if translated != title:
                         widget.set_title(translated)
                 
                 subtitle = widget.get_subtitle()
                 if subtitle:
-                    translated = _(subtitle, widget_id)
+                    translated = _translate_with_patterns_helper(subtitle, widget_id)
                     if translated != subtitle:
                         widget.set_subtitle(translated)
+
+            # Adw.StatusPage (Missing support added here)
+            elif isinstance(widget, Adw.StatusPage):
+                title = widget.get_title()
+                if title:
+                    translated = _translate_with_patterns_helper(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
+                
+                desc = widget.get_description()
+                if desc:
+                    translated = _translate_with_patterns_helper(desc, widget_id)
+                    if translated != desc:
+                        widget.set_description(translated)
 
             # Window title
             elif isinstance(widget, (Gtk.Window, Adw.ApplicationWindow)):
