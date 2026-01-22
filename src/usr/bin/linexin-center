@@ -31,8 +31,18 @@ from gi.repository import Gtk, Adw, GLib, GdkPixbuf, Gio, GObject, Gdk
 APP_VERSION = "1.0"
 
 # Constants
-WIDGET_DIRECTORY = "/usr/share/linexin/widgets"
-LOCALIZATION_BASE_DIR = "/usr/share/linexin/widgets/localization"
+# Determine paths based on script location (support running from source)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if os.path.exists(os.path.join(SCRIPT_DIR, "../share/linexin/widgets")):
+    # Running from source tree structure (usr/bin -> usr/share)
+    WIDGET_DIRECTORY = os.path.abspath(os.path.join(SCRIPT_DIR, "../share/linexin/widgets"))
+    LOCALIZATION_BASE_DIR = os.path.join(WIDGET_DIRECTORY, "localization")
+    print(f"DEBUG: Running from source. Paths set to {WIDGET_DIRECTORY}")
+else:
+    # System install fallback
+    WIDGET_DIRECTORY = "/usr/share/linexin/widgets"
+    LOCALIZATION_BASE_DIR = "/usr/share/linexin/widgets/localization"
+    print(f"DEBUG: Running from system install. Paths set to {WIDGET_DIRECTORY}")
 SIDEBAR_WIDTH = 330
 ICON_SIZE = 32
 APP_ID = "github.petexy.linexincenter"
@@ -69,6 +79,7 @@ def _translate_with_patterns_helper(text, widget_id):
     # 2. Try pattern matching
     # Add all patterns found in widgets here
     patterns_to_translate = [
+        "{} updates available",       # Added for system updater
         "Updating {}...",
         "Process exited with code {}",
         "Successfully updated your {}!",
@@ -348,6 +359,10 @@ class WidgetLocalizationManager(GObject.Object):
         
         # Load all available translations
         self._load_all_translations()
+        print(f"DEBUG: Loaded translations for widgets: {list(self.widget_translations.keys())}")
+        if 'system_updater' in self.widget_translations:
+             print(f"DEBUG: system_updater languages: {list(self.widget_translations['system_updater'].keys())}")
+        
         self._initialized = True
         self.selection_timeout_id = None
         self.pending_widget_selection = None
@@ -1359,35 +1374,6 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
     
     def _translate_markup_content(self, markup_text, widget_id):
         """Enhanced markup translation that handles both dynamic patterns and multiline descriptions."""
-        import re
-        
-        # 0. Try exact match translation first (Fixes Stability Warning)
-        # Often a whole markup string is in the dictionary
-        exact_match = _(markup_text, widget_id)
-        if exact_match != markup_text:
-            return exact_match
-
-        # Handle multiline descriptions first (like the DaVinci installer description)
-        if '\n' in markup_text and not any(tag in markup_text for tag in ['<span', '<b>', '<i>', '<u>']):
-            # This is likely a plain multiline text, translate line by line
-            lines = markup_text.split('\n')
-            translated_lines = []
-            
-            for line in lines:
-                line = line.strip()
-                if line:  # Non-empty lines
-                    translated = _(line, widget_id)
-                    translated_lines.append(translated)
-                else:  # Empty lines (spacing)
-                    translated_lines.append('')
-            
-            return '\n'.join(translated_lines)
-        
-        # Handle dynamic patterns with placeholders (from original code)
-        if "Installation failed: " in markup_text:
-            translated_failed = _("Installation failed: ", widget_id)
-            markup_text = markup_text.replace("Installation failed: ", translated_failed)
-        
         # Use common pattern helper
         markup_text = _translate_with_patterns_helper(markup_text, widget_id)
         
@@ -1401,8 +1387,11 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
                     # Preserve any whitespace around the text
                     leading_space = text_content[:len(text_content) - len(text_content.lstrip())]
                     trailing_space = text_content[len(text_content.rstrip()):]
-                    return leading_space + translated + trailing_space
-            return text_content
+                    # CRITICAL FIX: Restore the > and < which were consumed by the regex
+                    return ">" + leading_space + translated + trailing_space + "<"
+            
+            # If no translation or empty, fail properly by restoring brackets
+            return ">" + text_content + "<"
         
         # Only translate text strictly between tags (>...<)
         return re.sub(r'>([^<]+)<', replace_text, markup_text)
