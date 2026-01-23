@@ -7,5 +7,5 @@ Icon=/usr/share/icons/github.petexy.linexincenter.svg
 
 Terminal=false
 Type=Application
-Keywords=System;Linexin;Adwaita;Updates;Tools;Utility;
+Categories=System;Linexin;Adwaita;Updates;Tools;Utility;
 StartupNotify=false
