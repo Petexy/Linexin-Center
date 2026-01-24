@@ -1065,8 +1065,11 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
                 if hasattr(widget_instance, 'widgetname'):
                     self._register_widget(widget_instance, filename)  # Pass filename
                     
-            except Exception:
+            except Exception as e:
                 # Skip classes that can't be instantiated
+                print(f"Failed to instantiate widget in {filename}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
     
     def _register_widget(self, widget_instance, filename):

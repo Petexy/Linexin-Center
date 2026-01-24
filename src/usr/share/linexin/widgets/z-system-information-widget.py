@@ -12,22 +12,7 @@ import psutil
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-# VTE detection - try different version strings that VTE4 might use
-VTE_AVAILABLE = False
-VTE_VERSION = None
-for version in ["4.0", "3.91", "2.91"]:
-    try:
-        gi.require_version("Vte", version)
-        from gi.repository import Vte
-        VTE_AVAILABLE = True
-        VTE_VERSION = version
-        print(f"VTE loaded with version {version}")
-        break
-    except (ValueError, ImportError):
-        continue
 
-if not VTE_AVAILABLE:
-    print("No VTE version available")
 
 from gi.repository import Gtk, Adw, GLib, Pango
 
@@ -63,16 +48,12 @@ class LinexinSysInfoWidget(Gtk.Box):
         self.window = window
         self.hide_sidebar = hide_sidebar
         
-        # View state
-        self.current_view = "rows"  # "rows" or "fastfetch"
-        
         # Create main content
         self.setup_ui()
         
-        # Set initial view
-        self.content_stack.set_visible_child_name("rows")
-        
         self.load_system_info()
+        
+
         
         # Adjust window size for single widget mode
         if self.hide_sidebar and self.window:
@@ -123,27 +104,10 @@ class LinexinSysInfoWidget(Gtk.Box):
         
         header_box.append(title_box)
         
-        # View toggle button
-        self.view_toggle_button = Gtk.Button()
-        self.view_toggle_button.set_label(_("Fastfetch View"))
-        self.view_toggle_button.connect("clicked", self.on_view_toggle_clicked)
-        self.view_toggle_button.set_valign(Gtk.Align.START)
-        header_box.append(self.view_toggle_button)
-        
         self.append(header_box)
-        
-        # Create content stack to switch between views
-        self.content_stack = Gtk.Stack()
-        self.content_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
-        self.content_stack.set_vexpand(True)
         
         # Row view (existing info list)
         self.setup_row_view()
-        
-        # Fastfetch view
-        self.setup_fastfetch_view()
-        
-        self.append(self.content_stack)
     
     def setup_row_view(self):
         """Setup the row-based system info view"""
@@ -158,7 +122,9 @@ class LinexinSysInfoWidget(Gtk.Box):
         scrolled.set_child(self.info_listbox)
         scrolled.set_vexpand(True)
         
-        self.content_stack.add_named(scrolled, "rows")
+        scrolled.set_vexpand(True)
+        
+        self.append(scrolled)
     
     def setup_fastfetch_view(self):
         """Setup the fastfetch output view using VTE terminal"""
@@ -195,138 +161,7 @@ class LinexinSysInfoWidget(Gtk.Box):
             self.terminal_available = False
             self.setup_fastfetch_text_fallback()
     
-    def setup_fastfetch_text_fallback(self):
-        """Fallback fastfetch view using text widget"""
-        self.fastfetch_buffer = Gtk.TextBuffer()
-        self.fastfetch_textview = Gtk.TextView.new_with_buffer(self.fastfetch_buffer)
-        self.fastfetch_textview.set_wrap_mode(Gtk.WrapMode.WORD)
-        self.fastfetch_textview.set_editable(False)
-        self.fastfetch_textview.set_cursor_visible(False)
-        self.fastfetch_textview.set_monospace(True)
-        self.fastfetch_textview.set_left_margin(15)
-        self.fastfetch_textview.set_right_margin(15)
-        self.fastfetch_textview.set_top_margin(15)
-        self.fastfetch_textview.set_bottom_margin(15)
-        
-        # Scrolled window for fastfetch output
-        fastfetch_scrolled = Gtk.ScrolledWindow()
-        fastfetch_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        fastfetch_scrolled.set_child(self.fastfetch_textview)
-        fastfetch_scrolled.set_vexpand(True)
-        
-        self.content_stack.add_named(fastfetch_scrolled, "fastfetch")
-    
-    def on_view_toggle_clicked(self, button):
-        """Handle view toggle button click"""
-        if self.current_view == "rows":
-            self.current_view = "fastfetch"
-            self.view_toggle_button.set_label(_("Row View"))
-            self.content_stack.set_visible_child_name("fastfetch")
-            self.load_fastfetch_info()
-        else:
-            self.current_view = "rows"
-            self.view_toggle_button.set_label(_("Fastfetch View"))
-            self.content_stack.set_visible_child_name("rows")
-    
-    def load_fastfetch_info(self):
-        """Load fastfetch output - VTE or text fallback"""
-        if hasattr(self, 'terminal_available') and self.terminal_available:
-            # Use VTE terminal
-            self.spawn_fastfetch_in_terminal()
-        else:
-            # Use text fallback
-            self.load_fastfetch_text()
-    
-    def spawn_fastfetch_in_terminal(self):
-        """Spawn fastfetch in VTE terminal"""
-        try:
-            print(f"Spawning fastfetch in VTE terminal (version {VTE_VERSION})")
-            
-            # Clear terminal first
-            self.terminal.reset(True, True)
-            
-            # Check which spawn method is available
-            if hasattr(self.terminal, 'spawn') and hasattr(Vte, 'Launcher'):
-                print("Using VTE modern spawn method")
-                launcher = Vte.Launcher()
-                launcher.set_cwd(os.path.expanduser("~"))
-                launcher.set_clear_env(False)
-                self.terminal.spawn(launcher, ["fastfetch", "-l", "/usr/share/ascii/ascii_fast.txt", "--logo-color-1", "38;2;198;174;235"])
-                
-            elif hasattr(self.terminal, 'spawn_sync'):
-                print("Using VTE spawn_sync method")
-                self.terminal.spawn_sync(
-                    Vte.PtyFlags.DEFAULT,
-                    os.path.expanduser("~"),
-                    ["fastfetch", "-l", "/usr/share/ascii/ascii_fast.txt", "--logo-color-1", "38;2;198;174;235"],
-                    None,
-                    GLib.SpawnFlags.DEFAULT,
-                    None, None, None
-                )
-                
-            elif hasattr(self.terminal, 'fork_command_full'):
-                print("Using VTE fork_command_full method")
-                self.terminal.fork_command_full(
-                    Vte.PtyFlags.DEFAULT,
-                    os.path.expanduser("~"),
-                    ["fastfetch", "-l", "/usr/share/ascii/ascii_fast.txt", "--logo-color-1", "38;2;198;174;235"],
-                    None,
-                    GLib.SpawnFlags.DEFAULT,
-                    None, None
-                )
-            else:
-                raise Exception("No suitable VTE spawn method available")
-                
-            print("Fastfetch spawned successfully in VTE")
-            
-        except Exception as e:
-            print(f"VTE spawn failed: {e}, falling back to text")
-            self.terminal_available = False
-            self.load_fastfetch_text()
-    
-    def load_fastfetch_text(self):
-        """Load fastfetch in text view"""
-        def run_fastfetch():
-            try:
-                result = subprocess.run(['fastfetch', '--color-output', 'never'], 
-                                      capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    output = result.stdout
-                else:
-                    result = subprocess.run(['fastfetch'], capture_output=True, text=True, timeout=10)
-                    if result.returncode == 0:
-                        output = self.clean_fastfetch_output(result.stdout)
-                    else:
-                        output = _("Fastfetch command failed or not installed")
-            except subprocess.TimeoutExpired:
-                output = _("Fastfetch command timed out")
-            except FileNotFoundError:
-                output = _("Fastfetch is not installed on this system")
-            except Exception as e:
-                output = _("Error running fastfetch: {}").format(str(e))
-            
-            GLib.idle_add(self.update_fastfetch_text, output)
-        
-        # Show loading only if we have text buffer
-        if hasattr(self, 'fastfetch_buffer'):
-            self.fastfetch_buffer.set_text(_("Loading fastfetch output..."))
-        
-        threading.Thread(target=run_fastfetch, daemon=True).start()
-    
-    def clean_fastfetch_output(self, text):
-        """Clean fastfetch output while preserving ASCII art"""
-        import re
-        cursor_codes = re.compile(r'\x1B\[[0-9]*[ABCD]|\x1B\[[0-9]*G|\x1B\[[0-9]*C')
-        text = cursor_codes.sub('', text)
-        color_codes = re.compile(r'\x1B\[[0-9;]*m')
-        text = color_codes.sub('', text)
-        return text
-    
-    def update_fastfetch_text(self, output):
-        """Update text view with fastfetch output"""
-        if hasattr(self, 'fastfetch_buffer'):
-            self.fastfetch_buffer.set_text(output)
-        return False
+
     
     def create_info_row(self, label, value, icon_name=None):
         """Create a row with label and value"""
