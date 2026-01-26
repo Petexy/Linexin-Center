@@ -94,19 +94,36 @@ class SudoManager:
             full_cmd = [self.wrapper_path] + cmd
             return subprocess.run(full_cmd, **kwargs)
         finally:
-            # Cleanup: if feed wasn't consumed (e.g. sudo cached credentials), drain it
-            remaining = 0
-            with self._feed_condition:
-                remaining = self._feeds_allowed
-                
-            if remaining > 0:
-                try:
-                    # Dummy read to unblock the writer thread
-                    fd = os.open(self.fifo_path, os.O_RDONLY | os.O_NONBLOCK)
-                    os.read(fd, 1024)
-                    os.close(fd)
-                except Exception:
-                    pass
+            self._drain_pipe()
+
+    def start_privileged_session(self):
+        """Open the password gate for a long-running session"""
+        if not self.user_password:
+             return
+        with self._feed_condition:
+            self._feeds_allowed = 1000 # Allow many reads for complex operations
+            self._feed_condition.notify_all()
+            
+    def stop_privileged_session(self):
+        """Close the password gate"""
+        with self._feed_condition:
+            self._feeds_allowed = 0
+        self._drain_pipe()
+
+    def _drain_pipe(self):
+        """Helper to drain pipe if feed wasn't consumed"""
+        remaining = 0
+        with self._feed_condition:
+            remaining = self._feeds_allowed
+            
+        if remaining > 0:
+            try:
+                fd = os.open(self.fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+                os.read(fd, 1024)
+                os.close(fd)
+            except Exception:
+                pass
+
     def _setup_scripts(self):
         with open(self.askpass_script, "w") as f:
             f.write(f"#!/bin/sh\ncat \"{self.fifo_path}\"\n")
