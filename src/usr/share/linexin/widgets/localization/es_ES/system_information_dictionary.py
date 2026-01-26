@@ -1,6 +1,5 @@
 translations = {
     "Desktop Presets": "Preajustes de Escritorio",
-
     "Applying settings...": "Aplicando configuración...",
     "Restart Required": "Reinicio Requerido",
     "Pure GNOME": "GNOME Puro",
