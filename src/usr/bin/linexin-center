@@ -1371,6 +1371,9 @@ Hidden=false
             return True 
         if hasattr(self, '_stop_translation_monitoring'):
             self._stop_translation_monitoring()
+        for widget in self.loaded_widgets.values():
+            if hasattr(widget, '_cleanup_screenshot_tmp'):
+                widget._cleanup_screenshot_tmp()
         return False  
     def _on_widget_selected(self, listbox, row):
         """Handle widget selection from the sidebar with debouncing."""
