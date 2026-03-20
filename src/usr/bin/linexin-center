@@ -234,6 +234,7 @@ _original_messagedialog_set_heading = Adw.MessageDialog.set_heading
 _original_messagedialog_set_body = Adw.MessageDialog.set_body
 _original_messagedialog_add_response = Adw.MessageDialog.add_response
 _original_messagedialog_present = Adw.MessageDialog.present
+_original_preferenceswindow_present = Adw.PreferencesWindow.present
 def _translate_with_patterns_helper(text, widget_id):
     """
     Helper function to translate text that might contain dynamic variables (placeholders).
@@ -337,6 +338,21 @@ Adw.MessageDialog.set_heading = _translated_messagedialog_set_heading
 Adw.MessageDialog.set_body = _translated_messagedialog_set_body
 Adw.MessageDialog.add_response = _translated_messagedialog_add_response
 Adw.MessageDialog.present = _translated_messagedialog_present
+def _translated_preferenceswindow_present(self):
+    """PreferencesWindow.present wrapper that translates all content."""
+    widget_id = None
+    try:
+        win = self.get_transient_for()
+        if win and hasattr(win, 'active_widget_id'):
+            widget_id = win.active_widget_id
+    except Exception:
+        pass
+    if widget_id:
+        win = self.get_transient_for()
+        if win and hasattr(win, '_translate_widget_recursive'):
+            win._translate_widget_recursive(self, widget_id)
+    _original_preferenceswindow_present(self)
+Adw.PreferencesWindow.present = _translated_preferenceswindow_present
 _global_lock_manager = None
 def _get_lock_manager():
     """Get the global lock manager instance."""
@@ -1576,6 +1592,38 @@ Hidden=false
                     translated = _translate_with_patterns_helper(subtitle, widget_id)
                     if translated != subtitle:
                         widget.set_subtitle(translated)
+                if isinstance(widget, Adw.ComboRow):
+                    combo_model = widget.get_model()
+                    if isinstance(combo_model, Gtk.StringList):
+                        for i in range(combo_model.get_n_items()):
+                            s = combo_model.get_string(i)
+                            if s:
+                                t = _translate_with_patterns_helper(s, widget_id)
+                                if t != s:
+                                    combo_model.splice(i, 1, [t])
+            elif isinstance(widget, Adw.PreferencesRow):
+                title = widget.get_title()
+                if title:
+                    translated = _translate_with_patterns_helper(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
+            elif isinstance(widget, Adw.PreferencesGroup):
+                title = widget.get_title()
+                if title:
+                    translated = _translate_with_patterns_helper(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
+                desc = widget.get_description()
+                if desc:
+                    translated = _translate_with_patterns_helper(desc, widget_id)
+                    if translated != desc:
+                        widget.set_description(translated)
+            elif isinstance(widget, Adw.PreferencesPage):
+                title = widget.get_title()
+                if title:
+                    translated = _translate_with_patterns_helper(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
             elif isinstance(widget, Adw.StatusPage):
                 title = widget.get_title()
                 if title:
