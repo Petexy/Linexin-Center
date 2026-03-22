@@ -25,4 +25,10 @@ translations = {
     "Shortcut Removed": "Usunięto skrót",
     "Successfully removed shortcut for {}": "Pomyślnie usunięto skrót dla {}",
     "Please enter your password to remove the shortcut.": "Wprowadź hasło, aby usunąć skrót.",
+    "Edit widgets": "Edytuj widgety",
+    "Done": "Gotowe",
+    "Show widget": "Pokaż widget",
+    "Hide widget": "Ukryj widget",
+    "Move up": "Przesuń w górę",
+    "Move down": "Przesuń w dół",
 }

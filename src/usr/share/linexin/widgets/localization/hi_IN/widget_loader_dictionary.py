@@ -22,4 +22,10 @@ translations = {
     "Shortcut Removed": "शॉर्टकट हटा दिया गया",
     "Successfully removed shortcut for {}": "{} के लिए शॉर्टकट सफलतापूर्वक हटा दिया गया",
     "Please enter your password to remove the shortcut.": "शॉर्टकट हटाने के लिए कृपया अपना पासवर्ड दर्ज करें।",
+    "Edit widgets": "विजेट्स संपादित करें",
+    "Done": "हो गया",
+    "Show widget": "विजेट दिखाएं",
+    "Hide widget": "विजेट छिपाएं",
+    "Move up": "ऊपर ले जाएं",
+    "Move down": "नीचे ले जाएं",
 }

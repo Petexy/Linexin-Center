@@ -569,8 +569,11 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         self.pending_widget_selection: Any = None
         self._compact_mode: bool = False
         self._saved_compact: bool = bool(_load_config().get("compact_mode", False))
+        self._edit_mode: bool = False
+        self._hidden_widgets: set = set(_load_config().get("hidden_widgets", []))
         self._sidebar_rows: list[Any] = []
         self._compact_icon_buttons: list[Any] = []
+        self._edit_suffix_widgets: Dict[str, list] = {}
         self._sidebar_anim: Optional[Adw.TimedAnimation] = None
         self._btn_rotate_anim: Optional[Adw.TimedAnimation] = None
         self._btn_rotation_deg = 180.0
@@ -743,23 +746,36 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         self.sidebar_container.append(compact_scroll)
         self._compact_scroll = compact_scroll
         self._compact_scroll.set_visible(False)
-        # Compact mode toggle button at the bottom
+        # Bottom button bar: Edit + Compact toggle
+        self._sidebar_bottom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._sidebar_bottom_box.set_halign(Gtk.Align.CENTER)
+        self._sidebar_bottom_box.set_margin_bottom(16)
+        self._sidebar_bottom_box.set_margin_top(4)
+
+        # Edit mode toggle button
+        self._edit_toggle_btn = Gtk.Button()
+        self._edit_toggle_btn.set_icon_name("document-edit-symbolic")
+        self._edit_toggle_btn.add_css_class("flat")
+        self._edit_toggle_btn.add_css_class("edit-toggle-btn")
+        self._edit_toggle_btn.set_tooltip_text(_("Edit widgets"))
+        self._edit_toggle_btn.connect("clicked", self._on_edit_toggle_clicked)
+        self._sidebar_bottom_box.append(self._edit_toggle_btn)
+
+        # Compact mode toggle button
         self._compact_toggle_btn = Gtk.Button()
         self._compact_toggle_btn.set_icon_name("sidebar-show-symbolic")
         self._compact_toggle_btn.add_css_class("flat")
         self._compact_toggle_btn.add_css_class("compact-toggle-btn")
-        self._compact_toggle_btn.set_halign(Gtk.Align.CENTER)
-        self._compact_toggle_btn.set_margin_bottom(16)
-        self._compact_toggle_btn.set_margin_top(4)
         self._compact_toggle_btn.set_tooltip_text(_("Toggle compact mode"))
         self._compact_toggle_btn.connect("clicked", self._on_compact_toggle_clicked)
+        self._sidebar_bottom_box.append(self._compact_toggle_btn)
         # Apply initial rotation CSS (180 degrees for normal mode)
         self._btn_css_provider = Gtk.CssProvider()
         self._btn_css_provider.load_from_data(b".compact-toggle-btn { transition: none; transform: rotate(180deg); }")
         self._compact_toggle_btn.get_style_context().add_provider(
             self._btn_css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
         )
-        self.sidebar_container.append(self._compact_toggle_btn)
+        self.sidebar_container.append(self._sidebar_bottom_box)
         self._setup_sidebar_context_menu()
         self.sidebar_page.set_child(self.sidebar_container)
     def _setup_sidebar_context_menu(self):
@@ -973,7 +989,7 @@ Hidden=false
         """Create sidebar header with title and optional window controls."""
         header = Gtk.HeaderBar()
         header.add_css_class("flat")
-        title = Gtk.Label(label=_("Linexin Center (UNSTABLE)"))
+        title = Gtk.Label(label=_("Linexin Center"))
         title.add_css_class("heading")
         self._sidebar_header_title = title
         header.set_title_widget(title)
@@ -1126,10 +1142,40 @@ Hidden=false
     def _load_all_widgets_normal(self):
         """Load all widgets (normal mode)."""
         python_files = [f for f in os.listdir(WIDGET_DIRECTORY) if f.endswith(".py")]
-        python_files.sort()
+
+        # Load saved widget order from config
+        config = _load_config()
+        saved_order = config.get("widget_order", [])
+
+        if saved_order:
+            # Use saved order for known widgets; new widgets sorted by date at end
+            known_files = [f for f in saved_order if f in python_files]
+            new_files = [f for f in python_files if f not in saved_order]
+            new_files.sort(key=lambda f: os.path.getmtime(os.path.join(WIDGET_DIRECTORY, f)))
+            python_files = known_files + new_files
+        else:
+            # No saved order — sort by date added (modification time)
+            python_files.sort(key=lambda f: os.path.getmtime(os.path.join(WIDGET_DIRECTORY, f)))
         for filename in python_files:
             filepath: str = os.path.join(WIDGET_DIRECTORY, filename)
             module_name: str = filename[:-3] # type: ignore
+            self._load_widget_from_file(filepath, module_name)
+    def refresh_widgets(self):
+        """Re-scan the widgets directory and load any new widget files."""
+        if not os.path.exists(WIDGET_DIRECTORY):
+            return
+        # Collect filenames already loaded
+        loaded_filenames = set()
+        for meta in self.widget_metadata.values():
+            loaded_filenames.add(meta.get('filename', ''))
+        python_files = [f for f in os.listdir(WIDGET_DIRECTORY) if f.endswith(".py")]
+        new_files = [f for f in python_files if f not in loaded_filenames]
+        if not new_files:
+            return
+        new_files.sort(key=lambda f: os.path.getmtime(os.path.join(WIDGET_DIRECTORY, f)))
+        for filename in new_files:
+            filepath = os.path.join(WIDGET_DIRECTORY, filename)
+            module_name = filename[:-3]
             self._load_widget_from_file(filepath, module_name)
     def _load_target_widget_only(self):
         """Load only the target widget specified via command line."""
@@ -1229,13 +1275,30 @@ Hidden=false
                 except Exception as e:
                     print(f"Error adding widget header controls: {e}")
     def _auto_select_first_widget(self):
-        """Automatically select the first widget in the list."""
-        if not self.first_widget_loaded and self.widget_list.get_first_child():
-            first_row = self.widget_list.get_first_child()
-            if first_row and hasattr(first_row, 'widget_name'):
-                self.widget_list.select_row(first_row)
-                self._on_widget_selected(self.widget_list, first_row)
-                self.first_widget_loaded = True
+        """Automatically select the first widget, or Linexin Hello on first run."""
+        if self.first_widget_loaded:
+            return
+        config = _load_config()
+        is_first_run = not config.get("has_launched_before", False)
+        if is_first_run:
+            # Mark that the app has been launched
+            config["has_launched_before"] = True
+            _save_config(config)
+            # Try to select Linexin Hello widget
+            row = self.widget_list.get_first_child()
+            while row:
+                if hasattr(row, 'widget_name') and getattr(row, 'widget_name', '') == "Linexin Hello":
+                    self.widget_list.select_row(row)
+                    self._on_widget_selected(self.widget_list, row)
+                    self.first_widget_loaded = True
+                    return
+                row = row.get_next_sibling()
+        # Default: select the first widget
+        first_row = self.widget_list.get_first_child()
+        if first_row and hasattr(first_row, 'widget_name'):
+            self.widget_list.select_row(first_row)
+            self._on_widget_selected(self.widget_list, first_row)
+            self.first_widget_loaded = True
     def _load_widget_from_file(self, filepath, module_name):
         """Load a widget from a Python file."""
         try:
@@ -1329,17 +1392,22 @@ Hidden=false
         if widget_name not in self.widget_index:
             self.widget_order.append(widget_name)
             self.widget_index[widget_name] = len(self.widget_order) - 1
+        is_hidden = str(filename) in self._hidden_widgets
         translated_name = _(widget_name, widget_id)
-        self._add_widget_to_sidebar(widget_name, translated_name, icon_path)
-    def _add_widget_to_sidebar(self, widget_name, display_name, icon_path=None):
+        self._add_widget_to_sidebar(widget_name, translated_name, icon_path, is_hidden)
+    def _add_widget_to_sidebar(self, widget_name, display_name, icon_path=None, is_hidden=False):
         """Add a widget entry to the sidebar list."""
         row = Adw.ActionRow()
         row.set_title(display_name)
         row.set_activatable(True)
         row.widget_name = widget_name  
         row.display_name = display_name  
+        row.is_hidden_widget = is_hidden
         icon = self._load_widget_icon(icon_path)
         row.add_prefix(icon)
+        # Hide row if widget is hidden and not in edit mode
+        if is_hidden and not self._edit_mode:
+            row.set_visible(False)
         self.widget_list.append(row)
         self._sidebar_rows.append(row)
         # Also add a compact icon button
@@ -1355,8 +1423,16 @@ Hidden=false
         if hasattr(self, '_compact_strip'):
             self._compact_strip.append(compact_btn)
         self._compact_icon_buttons.append(compact_btn)
+        # Hide compact button too if widget is hidden
+        if is_hidden and not self._edit_mode:
+            compact_btn.set_visible(False)
     def _load_widget_icon(self, icon_path):
         """Load an icon from a file path or return default icon."""
+        if icon_path and not os.path.exists(icon_path) and icon_path.startswith("/usr/share/"):
+            relative = icon_path[len("/usr/share/"):]
+            source_path = os.path.join(SCRIPT_DIR, "..", "share", relative)
+            if os.path.exists(source_path):
+                icon_path = os.path.abspath(source_path)
         if not icon_path or not os.path.exists(icon_path):
             image = Gtk.Image.new_from_icon_name("application-x-addon-symbolic")
             image.set_pixel_size(ICON_SIZE)
@@ -1658,6 +1734,373 @@ Hidden=false
         config["compact_mode"] = new_compact
         _save_config(config)
 
+    def _on_edit_toggle_clicked(self, button: Any) -> None:
+        """Toggle edit mode for rearranging and hiding widgets."""
+        if self._edit_mode:
+            self._exit_edit_mode()
+        else:
+            self._enter_edit_mode()
+
+    def _enter_edit_mode(self) -> None:
+        """Enter edit mode with staggered iOS/Material-style animations."""
+        # If in compact mode, switch to normal first
+        if self._compact_mode:
+            self._set_compact_mode(False, animated=True)
+        self._edit_mode = True
+        self._drag_controllers: Dict[str, list] = {}
+        self._edit_row_anims: list = []
+        self._compact_toggle_btn.set_sensitive(False)
+
+        # Animate edit button: spin + morph to "Done" style
+        self._edit_toggle_btn.add_css_class("edit-btn-spinning")
+        GLib.timeout_add(300, self._finish_edit_btn_enter)
+
+        # Prepare rows: start invisible/scaled-down, then stagger them in
+        for i, row in enumerate(self._sidebar_rows):
+            row.set_visible(True)
+            widget_name = getattr(row, 'widget_name', '')
+            is_hidden = getattr(row, 'is_hidden_widget', False)
+            if is_hidden:
+                row.add_css_class("edit-hidden-row")
+            # Start in pre-animation state
+            row.add_css_class("edit-row-enter-prep")
+            self._add_edit_controls_to_row(row, widget_name, is_hidden)
+            self._attach_dnd_controllers(row)
+            # Stagger the reveal: each row animates 40ms after the previous
+            GLib.timeout_add(60 + i * 40, self._animate_row_enter, row)
+
+    def _finish_edit_btn_enter(self) -> bool:
+        """Finish the edit button enter transition."""
+        self._edit_toggle_btn.remove_css_class("edit-btn-spinning")
+        self._edit_toggle_btn.set_icon_name("object-select-symbolic")
+        self._edit_toggle_btn.set_tooltip_text(_("Done"))
+        self._edit_toggle_btn.add_css_class("suggested-action")
+        self._edit_toggle_btn.add_css_class("edit-btn-active")
+        return False
+
+    def _animate_row_enter(self, row) -> bool:
+        """Trigger the enter animation for a single row."""
+        row.remove_css_class("edit-row-enter-prep")
+        row.add_css_class("edit-row-enter")
+        # Clean up the animation class after it completes
+        GLib.timeout_add(400, self._cleanup_row_enter_class, row)
+        return False
+
+    def _cleanup_row_enter_class(self, row) -> bool:
+        """Remove the enter animation class after animation completes."""
+        row.remove_css_class("edit-row-enter")
+        return False
+
+    def _exit_edit_mode(self) -> None:
+        """Exit edit mode with smooth Material-style animations."""
+        self._edit_mode = False
+        self._compact_toggle_btn.set_sensitive(True)
+
+        # Animate edit button back
+        self._edit_toggle_btn.remove_css_class("edit-btn-active")
+        self._edit_toggle_btn.remove_css_class("suggested-action")
+        self._edit_toggle_btn.add_css_class("edit-btn-spinning")
+        GLib.timeout_add(300, self._finish_edit_btn_exit)
+
+        # Stagger rows out, then clean up after all animations finish
+        total_rows = len(self._sidebar_rows)
+        for i, row in enumerate(self._sidebar_rows):
+            row.remove_css_class("edit-drop-above")
+            row.remove_css_class("edit-drop-below")
+            GLib.timeout_add(i * 30, self._animate_row_exit, row)
+
+        # Final cleanup after all row animations + buffer
+        cleanup_delay = total_rows * 30 + 350
+        GLib.timeout_add(cleanup_delay, self._finish_exit_edit_mode)
+
+    def _finish_edit_btn_exit(self) -> bool:
+        """Finish the edit button exit transition."""
+        self._edit_toggle_btn.remove_css_class("edit-btn-spinning")
+        self._edit_toggle_btn.set_icon_name("document-edit-symbolic")
+        self._edit_toggle_btn.set_tooltip_text(_("Edit widgets"))
+        return False
+
+    def _animate_row_exit(self, row) -> bool:
+        """Trigger the exit animation for a single row."""
+        row.add_css_class("edit-row-exit")
+        return False
+
+    def _finish_exit_edit_mode(self) -> bool:
+        """Clean up after all exit animations have completed."""
+        for row in self._sidebar_rows:
+            widget_name = getattr(row, 'widget_name', '')
+            row.remove_css_class("edit-hidden-row")
+            row.remove_css_class("edit-row-exit")
+            row.remove_css_class("edit-row-enter")
+            row.remove_css_class("edit-row-enter-prep")
+            self._remove_edit_controls_from_row(row)
+            self._detach_dnd_controllers(row)
+            is_hidden = getattr(row, 'is_hidden_widget', False)
+            row.set_visible(not is_hidden)
+            # Also update compact icon visibility
+            for btn in self._compact_icon_buttons:
+                if getattr(btn, 'widget_name', '') == widget_name:
+                    btn.set_visible(not is_hidden)
+                    break
+        # If we hid the currently selected widget, select the first visible one
+        selected = self.widget_list.get_selected_row()
+        if selected and getattr(selected, 'is_hidden_widget', False):
+            self._auto_select_first_visible_widget()
+        self._save_widget_config()
+        return False
+
+    def _add_edit_controls_to_row(self, row, widget_name: str, is_hidden: bool) -> None:
+        """Add move up/down buttons and visibility toggle to a sidebar row."""
+        suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        suffix_box.add_css_class("edit-controls-box")
+
+        # Visibility toggle button
+        vis_btn = Gtk.Button()
+        vis_btn.add_css_class("flat")
+        vis_btn.add_css_class("edit-vis-btn")
+        if is_hidden:
+            vis_btn.set_icon_name("view-reveal-symbolic")
+            vis_btn.set_tooltip_text(_("Show widget"))
+        else:
+            vis_btn.set_icon_name("view-conceal-symbolic")
+            vis_btn.set_tooltip_text(_("Hide widget"))
+        vis_btn.connect("clicked", self._on_toggle_widget_visibility, row)
+        suffix_box.append(vis_btn)
+
+        # Move up button
+        up_btn = Gtk.Button()
+        up_btn.add_css_class("flat")
+        up_btn.add_css_class("edit-move-btn")
+        up_btn.set_icon_name("go-up-symbolic")
+        up_btn.set_tooltip_text(_("Move up"))
+        up_btn.connect("clicked", self._on_move_widget_up, row)
+        suffix_box.append(up_btn)
+
+        # Move down button
+        down_btn = Gtk.Button()
+        down_btn.add_css_class("flat")
+        down_btn.add_css_class("edit-move-btn")
+        down_btn.set_icon_name("go-down-symbolic")
+        down_btn.set_tooltip_text(_("Move down"))
+        down_btn.connect("clicked", self._on_move_widget_down, row)
+        suffix_box.append(down_btn)
+
+        row.add_suffix(suffix_box)
+        self._edit_suffix_widgets[widget_name] = [suffix_box]
+
+    def _remove_edit_controls_from_row(self, row) -> None:
+        """Remove edit controls from a sidebar row."""
+        widget_name = getattr(row, 'widget_name', '')
+        if widget_name in self._edit_suffix_widgets:
+            for widget in self._edit_suffix_widgets[widget_name]:
+                row.remove(widget)
+            del self._edit_suffix_widgets[widget_name]
+
+    def _on_toggle_widget_visibility(self, button: Any, row: Any) -> None:
+        """Toggle the hidden state of a widget in edit mode."""
+        widget_name = getattr(row, 'widget_name', '')
+        filename = self.widget_metadata.get(widget_name, {}).get('filename', '')
+        is_hidden = getattr(row, 'is_hidden_widget', False)
+        new_hidden = not is_hidden
+        row.is_hidden_widget = new_hidden
+        if new_hidden:
+            self._hidden_widgets.add(filename)
+            row.add_css_class("edit-hidden-row")
+            button.set_icon_name("view-reveal-symbolic")
+            button.set_tooltip_text(_("Show widget"))
+        else:
+            self._hidden_widgets.discard(filename)
+            row.remove_css_class("edit-hidden-row")
+            button.set_icon_name("view-conceal-symbolic")
+            button.set_tooltip_text(_("Hide widget"))
+
+    def _on_move_widget_up(self, button: Any, row: Any) -> None:
+        """Move a widget up in the sidebar order."""
+        widget_name = getattr(row, 'widget_name', '')
+        idx = self._sidebar_rows.index(row) if row in self._sidebar_rows else -1
+        if idx <= 0:
+            return
+        self._swap_widgets(idx, idx - 1)
+
+    def _on_move_widget_down(self, button: Any, row: Any) -> None:
+        """Move a widget down in the sidebar order."""
+        widget_name = getattr(row, 'widget_name', '')
+        idx = self._sidebar_rows.index(row) if row in self._sidebar_rows else -1
+        if idx < 0 or idx >= len(self._sidebar_rows) - 1:
+            return
+        self._swap_widgets(idx, idx + 1)
+
+    def _swap_widgets(self, idx_a: int, idx_b: int) -> None:
+        """Swap two widgets in sidebar, compact strip, and internal order."""
+        # Swap in _sidebar_rows
+        self._sidebar_rows[idx_a], self._sidebar_rows[idx_b] = \
+            self._sidebar_rows[idx_b], self._sidebar_rows[idx_a]
+        # Swap in widget_order
+        self.widget_order[idx_a], self.widget_order[idx_b] = \
+            self.widget_order[idx_b], self.widget_order[idx_a]
+        # Update widget_index
+        for i, name in enumerate(self.widget_order):
+            self.widget_index[name] = i
+        # Swap in compact icon buttons
+        if idx_a < len(self._compact_icon_buttons) and idx_b < len(self._compact_icon_buttons):
+            self._compact_icon_buttons[idx_a], self._compact_icon_buttons[idx_b] = \
+                self._compact_icon_buttons[idx_b], self._compact_icon_buttons[idx_a]
+        # Reorder the actual GTK ListBox rows
+        self._rebuild_listbox_order()
+        # Reorder compact strip
+        self._rebuild_compact_strip_order()
+
+    def _move_widget_to(self, src_idx: int, dst_idx: int) -> None:
+        """Move a widget from src_idx to dst_idx, shifting others accordingly."""
+        if src_idx == dst_idx or src_idx < 0 or dst_idx < 0:
+            return
+        if src_idx >= len(self._sidebar_rows) or dst_idx >= len(self._sidebar_rows):
+            return
+        # Move in _sidebar_rows
+        row = self._sidebar_rows.pop(src_idx)
+        self._sidebar_rows.insert(dst_idx, row)
+        # Move in widget_order
+        name = self.widget_order.pop(src_idx)
+        self.widget_order.insert(dst_idx, name)
+        # Rebuild widget_index
+        for i, n in enumerate(self.widget_order):
+            self.widget_index[n] = i
+        # Move in compact icon buttons
+        if src_idx < len(self._compact_icon_buttons) and dst_idx < len(self._compact_icon_buttons):
+            btn = self._compact_icon_buttons.pop(src_idx)
+            self._compact_icon_buttons.insert(dst_idx, btn)
+        self._rebuild_listbox_order()
+        self._rebuild_compact_strip_order()
+
+    def _attach_dnd_controllers(self, row) -> None:
+        """Attach drag source and drop target controllers to a row for reordering."""
+        widget_name = getattr(row, 'widget_name', '')
+        # Drag source
+        drag_source = Gtk.DragSource()
+        drag_source.set_actions(Gdk.DragAction.MOVE)
+        drag_source.connect("prepare", self._on_drag_prepare, row)
+        drag_source.connect("drag-begin", self._on_drag_begin, row)
+        drag_source.connect("drag-end", self._on_drag_end, row)
+        row.add_controller(drag_source)
+        # Drop target
+        drop_target = Gtk.DropTarget.new(GObject.TYPE_INT, Gdk.DragAction.MOVE)
+        drop_target.connect("motion", self._on_drop_motion, row)
+        drop_target.connect("leave", self._on_drop_leave, row)
+        drop_target.connect("drop", self._on_drop_drop, row)
+        row.add_controller(drop_target)
+        self._drag_controllers[widget_name] = [drag_source, drop_target]
+
+    def _detach_dnd_controllers(self, row) -> None:
+        """Remove drag source and drop target controllers from a row."""
+        widget_name = getattr(row, 'widget_name', '')
+        if widget_name in self._drag_controllers:
+            for ctrl in self._drag_controllers[widget_name]:
+                row.remove_controller(ctrl)
+            del self._drag_controllers[widget_name]
+
+    def _on_drag_prepare(self, source, x, y, row):
+        """Prepare drag data: provide the source row index."""
+        idx = self._sidebar_rows.index(row) if row in self._sidebar_rows else -1
+        if idx < 0:
+            return None
+        content = Gdk.ContentProvider.new_for_value(GObject.Value(GObject.TYPE_INT, idx))
+        return content
+
+    def _on_drag_begin(self, source, drag, row):
+        """Visual feedback when drag starts."""
+        row.add_css_class("edit-dragging")
+        # Use a label as the drag icon
+        display_name = getattr(row, 'display_name', '?')
+        label = Gtk.Label(label=display_name)
+        label.add_css_class("heading")
+        label.set_margin_start(12)
+        label.set_margin_end(12)
+        label.set_margin_top(6)
+        label.set_margin_bottom(6)
+        Gtk.DragIcon.get_for_drag(drag).set_child(label)
+        drag.set_hotspot(row.get_width() // 2, row.get_height() // 2)
+
+    def _on_drag_end(self, source, drag, delete, row):
+        """Clean up after drag ends."""
+        row.remove_css_class("edit-dragging")
+
+    def _on_drop_motion(self, target, x, y, row):
+        """Show drop indicator based on cursor position within the row."""
+        row_h = row.get_height()
+        if y < row_h / 2:
+            row.add_css_class("edit-drop-above")
+            row.remove_css_class("edit-drop-below")
+        else:
+            row.add_css_class("edit-drop-below")
+            row.remove_css_class("edit-drop-above")
+        return Gdk.DragAction.MOVE
+
+    def _on_drop_leave(self, target, row):
+        """Remove drop indicators when cursor leaves."""
+        row.remove_css_class("edit-drop-above")
+        row.remove_css_class("edit-drop-below")
+
+    def _on_drop_drop(self, target, value, x, y, row):
+        """Handle the actual drop: reorder the widget."""
+        src_idx = value
+        dst_idx = self._sidebar_rows.index(row) if row in self._sidebar_rows else -1
+        if src_idx < 0 or dst_idx < 0 or src_idx == dst_idx:
+            row.remove_css_class("edit-drop-above")
+            row.remove_css_class("edit-drop-below")
+            return False
+        # Determine if dropping above or below the target
+        row_h = row.get_height()
+        if y >= row_h / 2 and dst_idx >= src_idx:
+            dst_idx = min(dst_idx, len(self._sidebar_rows) - 1)
+        elif y >= row_h / 2 and dst_idx < src_idx:
+            dst_idx = min(dst_idx + 1, len(self._sidebar_rows) - 1)
+        elif y < row_h / 2 and dst_idx > src_idx:
+            dst_idx = max(dst_idx - 1, 0)
+        row.remove_css_class("edit-drop-above")
+        row.remove_css_class("edit-drop-below")
+        self._move_widget_to(src_idx, dst_idx)
+        return True
+
+    def _rebuild_listbox_order(self) -> None:
+        """Rebuild the ListBox to match _sidebar_rows order."""
+        # Remove all rows from listbox
+        for row in self._sidebar_rows:
+            self.widget_list.remove(row)
+        # Re-add in correct order
+        for row in self._sidebar_rows:
+            self.widget_list.append(row)
+
+    def _rebuild_compact_strip_order(self) -> None:
+        """Rebuild the compact strip to match _compact_icon_buttons order."""
+        if not hasattr(self, '_compact_strip'):
+            return
+        for btn in self._compact_icon_buttons:
+            self._compact_strip.remove(btn)
+        for btn in self._compact_icon_buttons:
+            self._compact_strip.append(btn)
+
+    def _auto_select_first_visible_widget(self) -> None:
+        """Select the first visible widget in the sidebar."""
+        for row in self._sidebar_rows:
+            if row.get_visible() and not getattr(row, 'is_hidden_widget', False):
+                self.widget_list.select_row(row)
+                self._on_widget_selected(self.widget_list, row)
+                return
+
+    def _save_widget_config(self) -> None:
+        """Save widget order and hidden widgets to config."""
+        config = _load_config()
+        # Build order list from filenames
+        order_filenames = []
+        for widget_name in self.widget_order:
+            meta = self.widget_metadata.get(widget_name, {})
+            filename = meta.get('filename', '')
+            if filename:
+                order_filenames.append(filename)
+        config["widget_order"] = order_filenames
+        config["hidden_widgets"] = list(self._hidden_widgets)
+        _save_config(config)
+
     def _on_compact_icon_clicked(self, button: Any) -> None:
         """Handle click on a compact mode icon to select the corresponding widget."""
         widget_name: str = str(getattr(button, 'widget_name', ''))
@@ -1936,6 +2379,64 @@ Hidden=false
             }
             .compact-toggle-btn image {
                 transition: none;
+            }
+            /* Edit mode toggle button */
+            .edit-toggle-btn {
+                min-width: 32px;
+                min-height: 32px;
+                border-radius: 50%;
+                transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1),
+                            background-color 250ms ease;
+            }
+            .edit-btn-spinning {
+                transform: rotate(180deg) scale(0.8);
+            }
+            .edit-btn-active {
+                transform: scale(1.05);
+            }
+            /* Edit mode: hidden widget row dimmed */
+            .edit-hidden-row {
+                opacity: 0.4;
+                transition: opacity 250ms ease;
+            }
+            /* Edit mode row enter animations */
+            .edit-row-enter-prep {
+                opacity: 0;
+                transform: translateX(-12px) scale(0.95);
+            }
+            .edit-row-enter {
+                opacity: 1;
+                transform: translateX(0px) scale(1);
+                transition: opacity 300ms cubic-bezier(0.0, 0.0, 0.2, 1),
+                            transform 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+            }
+            /* Edit mode row exit animations */
+            .edit-row-exit {
+                opacity: 0.6;
+                transform: scale(0.97);
+                transition: opacity 250ms ease-out,
+                            transform 250ms ease-out;
+            }
+            /* Edit controls slide-in */
+            .edit-controls-box {
+                transition: opacity 300ms cubic-bezier(0.0, 0.0, 0.2, 1),
+                            transform 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
+            }
+            /* Edit mode control buttons */
+            .edit-move-btn, .edit-vis-btn {
+                min-width: 28px;
+                min-height: 28px;
+                padding: 2px;
+            }
+            /* Drag and drop indicators */
+            .edit-dragging {
+                opacity: 0.4;
+            }
+            .edit-drop-above {
+                border-top: 2px solid @accent_color;
+            }
+            .edit-drop-below {
+                border-bottom: 2px solid @accent_color;
             }
         """
         css_provider = Gtk.CssProvider()

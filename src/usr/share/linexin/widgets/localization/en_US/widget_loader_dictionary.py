@@ -22,4 +22,10 @@ translations = {
     "Shortcut Removed": "Shortcut Removed",
     "Successfully removed shortcut for {}": "Successfully removed shortcut for {}",
     "Please enter your password to remove the shortcut.": "Please enter your password to remove the shortcut.",
+    "Edit widgets": "Edit widgets",
+    "Done": "Done",
+    "Show widget": "Show widget",
+    "Hide widget": "Hide widget",
+    "Move up": "Move up",
+    "Move down": "Move down",
 }

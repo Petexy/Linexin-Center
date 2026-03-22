@@ -22,4 +22,10 @@ translations = {
     "Shortcut Removed": "Verknüpfung entfernt",
     "Successfully removed shortcut for {}": "Verknüpfung für {} erfolgreich entfernt",
     "Please enter your password to remove the shortcut.": "Bitte geben Sie Ihr Passwort ein, um die Verknüpfung zu entfernen.",
+    "Edit widgets": "Widgets bearbeiten",
+    "Done": "Fertig",
+    "Show widget": "Widget anzeigen",
+    "Hide widget": "Widget ausblenden",
+    "Move up": "Nach oben",
+    "Move down": "Nach unten",
 }

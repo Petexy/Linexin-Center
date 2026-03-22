@@ -22,4 +22,10 @@ translations = {
     "Shortcut Removed": "Ярлык удален",
     "Successfully removed shortcut for {}": "Успешно удален ярлык для {}",
     "Please enter your password to remove the shortcut.": "Пожалуйста, введите пароль для удаления ярлыка.",
+    "Edit widgets": "Редактировать виджеты",
+    "Done": "Готово",
+    "Show widget": "Показать виджет",
+    "Hide widget": "Скрыть виджет",
+    "Move up": "Переместить вверх",
+    "Move down": "Переместить вниз",
 }

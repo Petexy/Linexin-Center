@@ -22,4 +22,10 @@ translations = {
     "Shortcut Removed": "快捷方式已删除",
     "Successfully removed shortcut for {}": "已成功删除 {} 的快捷方式",
     "Please enter your password to remove the shortcut.": "请输入您的密码以删除快捷方式。",
+    "Edit widgets": "编辑小部件",
+    "Done": "完成",
+    "Show widget": "显示小部件",
+    "Hide widget": "隐藏小部件",
+    "Move up": "上移",
+    "Move down": "下移",
 }
