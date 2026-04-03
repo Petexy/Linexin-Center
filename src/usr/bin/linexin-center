@@ -202,7 +202,7 @@ class SudoManager:
             pass
 def get_sudo_manager():
     return SudoManager.get_instance()
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.3.0"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if os.path.exists(os.path.join(SCRIPT_DIR, "../share/linexin/widgets")):
     WIDGET_DIRECTORY = os.path.abspath(os.path.join(SCRIPT_DIR, "../share/linexin/widgets"))
@@ -810,7 +810,9 @@ class WidgetLoaderWindow(_WindowBase):
         )
         self.sidebar_container.append(self._sidebar_bottom_box)
         self._setup_sidebar_context_menu()
-        self.sidebar_page.set_child(self.sidebar_container)
+        sidebar_handle = Gtk.WindowHandle()
+        sidebar_handle.set_child(self.sidebar_container)
+        self.sidebar_page.set_child(sidebar_handle)
     def _setup_sidebar_context_menu(self):
         menu = Gio.Menu()
         item = Gio.MenuItem.new(_("Create a shortcut"), "win.create_shortcut")
