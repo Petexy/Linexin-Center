@@ -9,6 +9,22 @@ window controls that respect GNOME settings and multi-language support.
 import gi # type: ignore # pylint: disable=import-error
 import os
 import sys
+
+# Detect Plasma/Hyprland early, before GTK initialises, so we can
+# request server-side decorations from the compositor.
+def _early_detect_de():
+    desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').upper()
+    session = os.environ.get('XDG_SESSION_DESKTOP', '').upper()
+    combined = f"{desktop} {session}"
+    if 'KDE' in combined or 'PLASMA' in combined:
+        return 'plasma'
+    if 'HYPRLAND' in combined:
+        return 'hyprland'
+    return None
+
+DETECTED_DE = _early_detect_de()
+IS_PLASMA_OR_HYPRLAND = DETECTED_DE in ('plasma', 'hyprland')
+
 import importlib.util
 import traceback
 import locale
@@ -205,6 +221,9 @@ APP_ID = "github.petexy.linexincenter"
 FALLBACK_LANGUAGE = "en_US"
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "linexin")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "linexin-center.json")
+
+KINEXIN_BAR_COLOR = (0x31, 0x31, 0x3A)  # #31313A
+KINEXIN_BAR_OPACITY = 80                 # 80%
 
 def _load_config() -> Dict[str, Any]:
     """Load app configuration from JSON file."""
@@ -542,7 +561,12 @@ def get_localization_manager():
 def _(key, widget_name="widget_loader"):
     """Convenience function for translations."""
     return get_localization_manager().get_text(key, widget_name)
-class WidgetLoaderWindow(Adw.ApplicationWindow):
+
+# On Plasma/Hyprland use Gtk.ApplicationWindow so the compositor
+# can apply server-side decorations (libadwaita forces CSD).
+_WindowBase = Gtk.ApplicationWindow if IS_PLASMA_OR_HYPRLAND else Adw.ApplicationWindow
+
+class WidgetLoaderWindow(_WindowBase):
     """Main application window with sidebar and content area."""
     def __init__(self, *args: Any, hide_sidebar: bool=False, target_widget: Optional[str]=None, voice_autostart: bool=False, conversation_id: Optional[str]=None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -665,12 +689,19 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
             "changed::button-layout", 
             self._on_button_layout_changed
         )
+    def _set_window_content(self, widget):
+        """Set the window's main content widget (handles Adw vs Gtk base class)."""
+        if IS_PLASMA_OR_HYPRLAND:
+            self.set_child(widget)
+        else:
+            self.set_content(widget)
+
     def _build_ui(self):
         """Build the main user interface structure."""
         self._create_persistent_widgets()
         if self.hide_sidebar:
             self._build_content_area()
-            self.set_content(self.content_page)
+            self._set_window_content(self.content_page)
             self.set_resizable(True)
         else:
             self._build_sidebar()
@@ -681,7 +712,7 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
             self.split_view.set_sidebar_width_fraction(0.25)
             self.split_view.set_sidebar(self.sidebar_page)
             self.split_view.set_content(self.content_page)
-            self.set_content(self.split_view)
+            self._set_window_content(self.split_view)
         self._apply_styling()
     def _create_persistent_widgets(self):
         """Create widgets that persist across UI rebuilds."""
@@ -725,6 +756,8 @@ class WidgetLoaderWindow(Adw.ApplicationWindow):
         self.sidebar_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.sidebar_container.set_spacing(0)
         self.sidebar_container.set_hexpand(True)
+        if IS_PLASMA_OR_HYPRLAND:
+            self.sidebar_container.add_css_class('kinexin-sidebar')
         header = self._create_sidebar_header()
         self.sidebar_container.append(header)
         separator = self._create_invisible_separator()
@@ -993,15 +1026,19 @@ Hidden=false
         title.add_css_class("heading")
         self._sidebar_header_title = title
         header.set_title_widget(title)
-        left_buttons, right_buttons = self._parse_button_layout()
-        if left_buttons:
-            header.set_show_title_buttons(True)
-            header.set_decoration_layout(f"{left_buttons}:")
-            title.set_margin_top(0)
-            title.set_margin_start(30)
-        else:
+        if IS_PLASMA_OR_HYPRLAND:
             header.set_show_title_buttons(False)
-            title.set_margin_top(10)
+            title.set_visible(False)
+        else:
+            left_buttons, right_buttons = self._parse_button_layout()
+            if left_buttons:
+                header.set_show_title_buttons(True)
+                header.set_decoration_layout(f"{left_buttons}:")
+                title.set_margin_top(0)
+                title.set_margin_start(30)
+            else:
+                header.set_show_title_buttons(False)
+                title.set_margin_top(10)
         return header
     def _create_scrollable_widget_list(self):
         """Create scrollable container for the widget list."""
@@ -1027,6 +1064,8 @@ Hidden=false
         self.content_page.set_title(_("Widget Content"))
         content_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content_container.set_spacing(0)
+        if IS_PLASMA_OR_HYPRLAND:
+            content_container.add_css_class('kinexin-content')
         header = self._create_content_header()
         content_container.append(header)
         separator = self._create_invisible_separator()
@@ -1039,7 +1078,9 @@ Hidden=false
         header.add_css_class("flat")
         self.content_header = header
         self._widget_header_widget = None
-        if self.hide_sidebar:
+        if IS_PLASMA_OR_HYPRLAND:
+            header.set_show_title_buttons(False)
+        elif self.hide_sidebar:
             header.set_show_title_buttons(True)
             header.set_decoration_layout(self.current_button_layout)
         else:
@@ -2439,6 +2480,32 @@ Hidden=false
                 border-bottom: 2px solid @accent_color;
             }
         """
+        kinexin_css = ""
+        if IS_PLASMA_OR_HYPRLAND:
+            r, g, b = KINEXIN_BAR_COLOR
+            alpha = round(KINEXIN_BAR_OPACITY / 100.0, 2)
+            kinexin_css = f"""
+            /* Override the global gtk.css window background so we control
+               opacity per-region: sidebar matches the deco bar exactly,
+               content stays opaque. */
+            window,
+            .sidebar-pane,
+            .sidebar-pane > navigation-view-page {{
+                background: transparent;
+            }}
+            .kinexin-sidebar {{
+                background-color: rgba({r}, {g}, {b}, {alpha});
+            }}
+            .kinexin-sidebar headerbar.flat {{
+                background: transparent;
+            }}
+            /* Keep content area opaque */
+            .kinexin-content,
+            .content-pane,
+            .content-pane > navigation-view-page {{
+                background-color: @window_bg_color;
+            }}
+            """
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(css.encode())
         Gtk.StyleContext.add_provider_for_display(
@@ -2446,6 +2513,15 @@ Hidden=false
             css_provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
+        if IS_PLASMA_OR_HYPRLAND:
+            # Loaded above USER priority (800) so it overrides ~/.config/gtk-4.0/gtk.css
+            kinexin_provider = Gtk.CssProvider()
+            kinexin_provider.load_from_data(kinexin_css.encode())
+            Gtk.StyleContext.add_provider_for_display(
+                self.get_display(),
+                kinexin_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_USER + 1
+            )
 class WidgetLoaderApp(Adw.Application):
     """Main application class."""
     def __init__(self, **kwargs: Any):
