@@ -20,7 +20,7 @@ makedepends=(
 package() {
    mkdir -p ${pkgdir}/usr/share/linexin/widgets
    mkdir -p ${pkgdir}/usr/bin
-   mkdir -p ${pkgdir}/usr/applications
-   mkdir -p ${pkgdir}/usr/icons   
+   mkdir -p ${pkgdir}/usr/share/applications
+   mkdir -p ${pkgdir}/usr/share/icons   
    cp -rf ${srcdir}/usr/ ${pkgdir}/
 }

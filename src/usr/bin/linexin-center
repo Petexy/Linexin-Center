@@ -60,7 +60,6 @@ class SudoManager:
         self._sudo_tf.close()
         self.fifo_dir = tempfile.mkdtemp(prefix="linexin-pipe-")
         self.fifo_path = os.path.join(self.fifo_dir, "password_pipe")
-        self.fifo_path = os.path.join(self.fifo_dir, "password_pipe")
         os.mkfifo(self.fifo_path, 0o600)
         self._setup_scripts()
         self._feed_condition = threading.Condition()
@@ -158,7 +157,7 @@ class SudoManager:
                 input=(password + '\n'),
                 capture_output=True,
                 text=True,
-                env={'LC_ALL': 'C'}
+                env={**os.environ, 'LC_ALL': 'C'}
             )
             return result.returncode == 0
         except Exception as e:
@@ -186,7 +185,8 @@ class SudoManager:
         self._running = False
         self.forget_password()
         try:
-            os.open(self.fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+            fd = os.open(self.fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+            os.close(fd)
         except:
             pass
         try:
@@ -219,6 +219,7 @@ COMPACT_ICON_SIZE = 28
 COMPACT_ANIM_DURATION = 350
 APP_ID = "github.petexy.linexincenter"
 FALLBACK_LANGUAGE = "en_US"
+_language_override: Optional[str] = None
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "linexin")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "linexin-center.json")
 
@@ -248,190 +249,284 @@ _original_run = subprocess.run
 _original_call = subprocess.call
 _original_check_call = subprocess.check_call
 _original_check_output = subprocess.check_output
-_original_messagedialog_init = Adw.MessageDialog.__init__
-_original_messagedialog_set_heading = Adw.MessageDialog.set_heading
-_original_messagedialog_set_body = Adw.MessageDialog.set_body
-_original_messagedialog_add_response = Adw.MessageDialog.add_response
-_original_messagedialog_present = Adw.MessageDialog.present
-_original_preferenceswindow_present = Adw.PreferencesWindow.present
 def _translate_with_patterns_helper(text, widget_id):
     """
     Helper function to translate text that might contain dynamic variables (placeholders).
-    Uses the localization manager to find matches.
+    Scans dictionary keys containing {} to match format-string patterns dynamically.
     """
     if not text:
         return ""
     translated = _(text, widget_id)
     if translated != text:
         return translated
-    patterns_to_translate = [
-        "{} updates available",       
-        "Updating {}...",
-        "Process exited with code {}",
-        "Successfully updated your {}!",
-        "Installing {}...",
-        "Successfully installed {}!",
-        "Successfully installed {}",  
-        "Successfully removed {}",    
-        "Removing {}...",             
-        "Removing {}",                
-        "Please enter your password to {} this package.", 
-        "Please enter your password to {} this package",
-        "Building {}...",             
-        "Removed {}",                 
-        "Installed {}",               
-        "Back to Search",             
-        "To complete the change to {}, you need to log out and log back in again."
-    ]
-    for pattern in patterns_to_translate:
-        escaped_pattern = re.escape(pattern)
-        regex_pattern = escaped_pattern.replace(re.escape("{}"), r"(.*)")
-        match = re.search(regex_pattern, text)
-        if match:
-            translated_pattern = _(pattern, widget_id)
-            if translated_pattern != pattern:
+    # Dynamically scan dictionary keys that contain {} placeholders
+    manager = get_localization_manager()
+    if widget_id in manager.widget_translations:
+        widget_trans = manager.widget_translations[widget_id]
+        lang = manager.system_language
+        trans_dict = widget_trans.get(lang) or widget_trans.get(FALLBACK_LANGUAGE, {})
+        for pattern, translated_pattern in trans_dict.items():
+            if '{}' not in pattern:
+                continue
+            escaped_pattern = re.escape(pattern)
+            regex_pattern = escaped_pattern.replace(re.escape("{}"), r"(.*)")
+            match = re.search(regex_pattern, text)
+            if match and translated_pattern != pattern:
                 if match.groups():
                     content = match.group(1)
                     translated_content = _translate_with_patterns_helper(content, widget_id)
-                    translated_text = translated_pattern.replace("{}", translated_content)
+                    translated_text = translated_pattern.replace("{}", translated_content, 1)
                     return text.replace(match.group(0), translated_text)
                 else:
                     return text.replace(match.group(0), translated_pattern)
     return text
-def _translated_messagedialog_init(self, **kwargs):
-    """MessageDialog.__init__ wrapper that translates initial properties."""
-    widget_id = None
-    parent = kwargs.get('transient_for')
-    if parent and hasattr(parent, 'active_widget_id'):
-        widget_id = parent.active_widget_id
-    if widget_id:
-        if 'heading' in kwargs and kwargs['heading']:
-            kwargs['heading'] = _translate_with_patterns_helper(kwargs['heading'], widget_id)
-        if 'body' in kwargs and kwargs['body']:
-            kwargs['body'] = _translate_with_patterns_helper(kwargs['body'], widget_id)
-    _original_messagedialog_init(self, **kwargs)
-def _translated_messagedialog_set_heading(self, heading):
-    """MessageDialog.set_heading wrapper."""
-    widget_id = _resolve_widget_id_from_dialog(self)
-    if heading and widget_id:
-        heading = _translate_with_patterns_helper(heading, widget_id)
-    _original_messagedialog_set_heading(self, heading)
-def _translated_messagedialog_set_body(self, body):
-    """MessageDialog.set_body wrapper."""
-    widget_id = _resolve_widget_id_from_dialog(self)
-    if body and widget_id:
-        body = _translate_with_patterns_helper(body, widget_id)
-    _original_messagedialog_set_body(self, body)
-def _translated_messagedialog_add_response(self, response_id, label):
-    """MessageDialog.add_response wrapper."""
-    widget_id = _resolve_widget_id_from_dialog(self)
-    if label and widget_id:
-        label = _translate_with_patterns_helper(label, widget_id)
-    _original_messagedialog_add_response(self, response_id, label)
-def _translated_messagedialog_present(self):
+def _translate_dialog(dialog, widget_id=None):
+    """Translate all text in a dialog before presenting it.
+    
+    Injected into widget modules as 'translate_dialog'.
+    If widget_id is None, attempts to resolve from dialog's transient parent.
     """
-    Wrapper for present() that forces a translation pass on the entire dialog tree.
-    This catches:
-    1. Widgets added to extra_child (like PasswordEntry, CheckButtons)
-    2. Markup that wasn't handled by simple property translation
+    if widget_id is None:
+        try:
+            win = dialog.get_transient_for()
+            if win and hasattr(win, 'active_widget_id'):
+                widget_id = win.active_widget_id
+        except Exception:
+            pass
+    if not widget_id:
+        return
+    # Translate heading/body/responses via properties
+    if hasattr(dialog, 'get_heading') and dialog.get_heading():
+        translated = _translate_with_patterns_helper(dialog.get_heading(), widget_id)
+        if translated != dialog.get_heading():
+            dialog.set_heading(translated)
+    if hasattr(dialog, 'get_body') and dialog.get_body():
+        translated = _translate_with_patterns_helper(dialog.get_body(), widget_id)
+        if translated != dialog.get_body():
+            dialog.set_body(translated)
+    # Recursively translate extra_child and all nested widgets
+    _translate_widget_recursive_static(dialog, widget_id)
+
+def _translate_window(window, widget_id=None):
+    """Translate all text in a PreferencesWindow before presenting it.
+    
+    Injected into widget modules as 'translate_window'.
+    If widget_id is None, attempts to resolve from window's transient parent.
     """
-    widget_id = _resolve_widget_id_from_dialog(self)
-    if widget_id:
-        win = self.get_transient_for()
-        if win and hasattr(win, '_translate_widget_recursive'):
-            win._translate_widget_recursive(self, widget_id)
-        else:
-             pass
-    _original_messagedialog_present(self)
-def _resolve_widget_id_from_dialog(dialog):
-    """Helper to find the active widget ID from a dialog's transient parent."""
+    if widget_id is None:
+        try:
+            win = window.get_transient_for()
+            if win and hasattr(win, 'active_widget_id'):
+                widget_id = win.active_widget_id
+        except Exception:
+            pass
+    if not widget_id:
+        return
+    _translate_widget_recursive_static(window, widget_id)
+
+def _translate_widget_recursive_static(widget, widget_id):
+    """Recursively translate a widget and all its children (static version)."""
     try:
-        win = dialog.get_transient_for()
-        if win and hasattr(win, 'active_widget_id'):
-            return win.active_widget_id
-    except:
-        pass
-    return None
-Adw.MessageDialog.__init__ = _translated_messagedialog_init
-Adw.MessageDialog.set_heading = _translated_messagedialog_set_heading
-Adw.MessageDialog.set_body = _translated_messagedialog_set_body
-Adw.MessageDialog.add_response = _translated_messagedialog_add_response
-Adw.MessageDialog.present = _translated_messagedialog_present
-def _translated_preferenceswindow_present(self):
-    """PreferencesWindow.present wrapper that translates all content."""
-    widget_id = None
-    try:
-        win = self.get_transient_for()
-        if win and hasattr(win, 'active_widget_id'):
-            widget_id = win.active_widget_id
+        _translate_single_widget_static(widget, widget_id)
+        if hasattr(widget, 'get_first_child'):
+            child = widget.get_first_child()
+            while child:
+                _translate_widget_recursive_static(child, widget_id)
+                child = child.get_next_sibling()
+        elif hasattr(widget, 'get_child'):
+            child = widget.get_child()
+            if child:
+                _translate_widget_recursive_static(child, widget_id)
     except Exception:
         pass
-    if widget_id:
-        win = self.get_transient_for()
-        if win and hasattr(win, '_translate_widget_recursive'):
-            win._translate_widget_recursive(self, widget_id)
-    _original_preferenceswindow_present(self)
-Adw.PreferencesWindow.present = _translated_preferenceswindow_present
+
+def _translate_single_widget_static(widget, widget_id):
+    """Translate text in a single widget (static version for helpers)."""
+    try:
+        if isinstance(widget, Gtk.Label):
+            if widget.get_use_markup():
+                markup = widget.get_label()
+                if markup:
+                    translated_markup = _translate_markup_content_static(markup, widget_id)
+                    if translated_markup != markup:
+                        widget.set_markup(translated_markup)
+            else:
+                text = widget.get_text()
+                if text:
+                    translated = _translate_with_patterns_helper(text, widget_id)
+                    if translated != text:
+                        widget.set_text(translated)
+        elif isinstance(widget, Gtk.Button):
+            label = widget.get_label()
+            if label:
+                translated = _translate_with_patterns_helper(label, widget_id)
+                if translated != label:
+                    widget.set_label(translated)
+        elif isinstance(widget, (Gtk.Entry, Gtk.SearchEntry, Gtk.PasswordEntry)):
+            placeholder = widget.get_placeholder_text()
+            if placeholder:
+                translated = _translate_with_patterns_helper(placeholder, widget_id)
+                if translated != placeholder:
+                    widget.set_placeholder_text(translated)
+        elif isinstance(widget, Adw.ActionRow):
+            title = widget.get_title()
+            if title:
+                translated = _translate_with_patterns_helper(title, widget_id)
+                if translated != title:
+                    widget.set_title(translated)
+            subtitle = widget.get_subtitle()
+            if subtitle:
+                translated = _translate_with_patterns_helper(subtitle, widget_id)
+                if translated != subtitle:
+                    widget.set_subtitle(translated)
+            if isinstance(widget, Adw.ComboRow):
+                model = widget.get_model()
+                if model and isinstance(model, Gtk.StringList):
+                    n = model.get_n_items()
+                    translated_items = []
+                    needs_update = False
+                    for i in range(n):
+                        item = model.get_string(i)
+                        t = _translate_with_patterns_helper(item, widget_id) if item else item
+                        translated_items.append(t)
+                        if t != item:
+                            needs_update = True
+                    if needs_update:
+                        selected = widget.get_selected()
+                        model.splice(0, n, translated_items)
+                        widget.set_selected(selected)
+        elif isinstance(widget, Adw.PreferencesGroup):
+            title = widget.get_title()
+            if title:
+                translated = _translate_with_patterns_helper(title, widget_id)
+                if translated != title:
+                    widget.set_title(translated)
+            desc = widget.get_description()
+            if desc:
+                translated = _translate_with_patterns_helper(desc, widget_id)
+                if translated != desc:
+                    widget.set_description(translated)
+        elif isinstance(widget, (Adw.PreferencesRow, Adw.PreferencesPage)):
+            title = widget.get_title()
+            if title:
+                translated = _translate_with_patterns_helper(title, widget_id)
+                if translated != title:
+                    widget.set_title(translated)
+        elif isinstance(widget, Adw.StatusPage):
+            title = widget.get_title()
+            if title:
+                translated = _translate_with_patterns_helper(title, widget_id)
+                if translated != title:
+                    widget.set_title(translated)
+            desc = widget.get_description()
+            if desc:
+                translated = _translate_with_patterns_helper(desc, widget_id)
+                if translated != desc:
+                    widget.set_description(translated)
+        elif isinstance(widget, (Gtk.Window, Adw.ApplicationWindow)):
+            title = widget.get_title()
+            if title:
+                translated = _translate_with_patterns_helper(title, widget_id)
+                if translated != title:
+                    widget.set_title(translated)
+    except Exception:
+        pass
+
+def _translate_markup_content_static(markup_text, widget_id):
+    """Translate markup content by matching text between XML tags."""
+    markup_text = _translate_with_patterns_helper(markup_text, widget_id)
+    def replace_text(match):
+        text_content = match.group(1)
+        if text_content.strip():
+            translated = _(text_content.strip(), widget_id)
+            if translated != text_content.strip():
+                leading_space = text_content[:len(text_content) - len(text_content.lstrip())]
+                trailing_space = text_content[len(text_content.rstrip()):]
+                return ">" + leading_space + translated + trailing_space + "<"
+        return ">" + text_content + "<"
+    return re.sub(r'>([^<]+)<', replace_text, markup_text)
 _global_lock_manager = None
 def _get_lock_manager():
     """Get the global lock manager instance."""
     return _global_lock_manager
+def _should_lock_command(args, kwargs):
+    """Determine if a subprocess command requires UI locking.
+    Only privileged commands (those using SudoManager's wrapper) should lock."""
+    cmd = args[0] if args else kwargs.get('args')
+    if cmd is None:
+        return False
+    # Get the executable from the command
+    if isinstance(cmd, (list, tuple)) and len(cmd) > 0:
+        exe = str(cmd[0])
+    elif isinstance(cmd, str):
+        exe = cmd.split()[0] if cmd.strip() else ''
+    else:
+        return False
+    # Check if it's a privileged command via the sudo wrapper
+    sm = SudoManager._instance
+    if sm and sm.wrapper_path and (exe == sm.wrapper_path or exe.endswith(os.path.basename(sm.wrapper_path))):
+        return True
+    # Also lock if the command string contains the wrapper path (shell=True case)
+    if isinstance(cmd, str) and sm and sm.wrapper_path and sm.wrapper_path in cmd:
+        return True
+    return False
 class _LockedPopen(_original_popen):
-    """Subprocess.Popen wrapper that handles UI locking."""
+    """Subprocess.Popen wrapper that handles UI locking for privileged commands."""
     def __init__(self, *args, **kwargs):
         lock_manager = _get_lock_manager()
-        if lock_manager:
+        if lock_manager is not None and _should_lock_command(args, kwargs):
             lock_manager.lock()
-        super().__init__(*args, **kwargs)
-        if lock_manager:
+            super().__init__(*args, **kwargs)
+            lm = lock_manager  # capture for closure
             def monitor():
                 try:
                     self.wait()
                 finally:
-                    if lock_manager is not None:
-                        lock_manager.unlock()
+                    lm.unlock()
             thread = threading.Thread(target=monitor, daemon=True)
             thread.start()
+        else:
+            super().__init__(*args, **kwargs)
 def _locked_run(*args, **kwargs):
-    """Subprocess.run wrapper with locking."""
+    """Subprocess.run wrapper with locking for privileged commands."""
     lock_manager = _get_lock_manager()
-    if lock_manager:
+    if lock_manager is not None and _should_lock_command(args, kwargs):
         lock_manager.lock()
-    try:
-        return _original_run(*args, **kwargs) # type: ignore
-    finally:
-        if lock_manager:
+        try:
+            return _original_run(*args, **kwargs) # type: ignore
+        finally:
             lock_manager.unlock()
+    return _original_run(*args, **kwargs) # type: ignore
 def _locked_call(*args, **kwargs):
-    """Subprocess.call wrapper with locking."""
+    """Subprocess.call wrapper with locking for privileged commands."""
     lock_manager = _get_lock_manager()
-    if lock_manager:
+    if lock_manager is not None and _should_lock_command(args, kwargs):
         lock_manager.lock()
-    try:
-        return _original_call(*args, **kwargs) # type: ignore
-    finally:
-        if lock_manager:
+        try:
+            return _original_call(*args, **kwargs) # type: ignore
+        finally:
             lock_manager.unlock()
+    return _original_call(*args, **kwargs) # type: ignore
 def _locked_check_call(*args, **kwargs):
-    """Subprocess.check_call wrapper with locking."""
+    """Subprocess.check_call wrapper with locking for privileged commands."""
     lock_manager = _get_lock_manager()
-    if lock_manager:
+    if lock_manager is not None and _should_lock_command(args, kwargs):
         lock_manager.lock()
-    try:
-        return _original_check_call(*args, **kwargs) # type: ignore
-    finally:
-        if lock_manager:
+        try:
+            return _original_check_call(*args, **kwargs) # type: ignore
+        finally:
             lock_manager.unlock()
+    return _original_check_call(*args, **kwargs) # type: ignore
 def _locked_check_output(*args, **kwargs):
-    """Subprocess.check_output wrapper with locking."""
+    """Subprocess.check_output wrapper with locking for privileged commands."""
     lock_manager = _get_lock_manager()
-    if lock_manager:
+    if lock_manager is not None and _should_lock_command(args, kwargs):
         lock_manager.lock()
-    try:
-        return _original_check_output(*args, **kwargs) # type: ignore
-    finally:
-        if lock_manager:
+        try:
+            return _original_check_output(*args, **kwargs) # type: ignore
+        finally:
             lock_manager.unlock()
+    return _original_check_output(*args, **kwargs) # type: ignore
 subprocess.Popen = _LockedPopen # type: ignore
 subprocess.run = _locked_run # type: ignore
 subprocess.call = _locked_call # type: ignore
@@ -465,6 +560,8 @@ class WidgetLocalizationManager(GObject.Object):
         self.pending_widget_selection: Any = None
     def _get_system_language(self):
         """Get the system language code."""
+        if _language_override:
+            return _language_override
         try:
             lang = locale.getlocale()[0]
             if lang:
@@ -587,7 +684,6 @@ class WidgetLoaderWindow(_WindowBase):
         self._visible_widget_name: Optional[str] = None  
         self.active_widget: Any = None
         self.active_widget_id: Optional[str] = None
-        self.translation_timer: Optional[int] = None
         self.first_widget_loaded: bool = False
         self.selection_timeout_id: Optional[int] = None
         self.pending_widget_selection: Any = None
@@ -924,10 +1020,12 @@ class WidgetLoaderWindow(_WindowBase):
                         body=_("Incorrect password.")
                     )
                     err_dlg.add_response("ok", _("OK"))
+                    _translate_dialog(err_dlg)
                     err_dlg.present()
         
         dialog.connect("response", response_handler)
         dialog.set_default_response("authenticate")
+        _translate_dialog(dialog)
         dialog.present()
 
     def _perform_shortcut_creation(self, widget_name):
@@ -943,10 +1041,13 @@ class WidgetLoaderWindow(_WindowBase):
         if icon_path and not icon_path.startswith('/'):
              icon_path = f"/usr/share/icons/{icon_path}"
              
+        # Sanitize fields to prevent injection via newlines
+        safe_name = display_name.replace('\n', ' ').replace('\r', '')
+        safe_icon = icon_path.replace('\n', ' ').replace('\r', '') if icon_path else ''
         content = f"""[Desktop Entry]
-Name={display_name}
+Name={safe_name}
 Exec=linexin-center -w {clean_name}
-Icon={icon_path}
+Icon={safe_icon}
 Terminal=false
 Type=Application
 Categories=Utility;Tools;
@@ -971,6 +1072,7 @@ Hidden=false
                 body=_("Successfully created shortcut for {}").format(display_name)
             )
             dlg.add_response("ok", _("OK"))
+            _translate_dialog(dlg)
             dlg.present()
             
         except Exception as e:
@@ -981,6 +1083,7 @@ Hidden=false
                 body=str(e)
             )
             dlg.add_response("ok", _("OK"))
+            _translate_dialog(dlg)
             dlg.present()
         finally:
             get_sudo_manager().forget_password()
@@ -1007,6 +1110,7 @@ Hidden=false
                 body=_("Successfully removed shortcut for {}").format(display_name)
             )
             dlg.add_response("ok", _("OK"))
+            _translate_dialog(dlg)
             dlg.present()
         except Exception as e:
             print(f"Error removing shortcut: {e}")
@@ -1016,6 +1120,7 @@ Hidden=false
                 body=str(e)
             )
             dlg.add_response("ok", _("OK"))
+            _translate_dialog(dlg)
             dlg.present()
         finally:
             get_sudo_manager().forget_password()
@@ -1288,15 +1393,6 @@ Hidden=false
         display_name = _(widget_name, self.active_widget_id) if self.active_widget_id else widget_name
         self.set_title(display_name)
         self.content_page.set_title(display_name)
-        # Defer expensive recursive tree walks so widget appears immediately
-        if self.active_widget_id and isinstance(widget_instance, Gtk.Widget):
-            GLib.idle_add(self._deferred_translation_setup, widget_instance, self.active_widget_id)
-    def _deferred_translation_setup(self, widget_instance, widget_id):
-        """Run translation and signal setup after the widget is visible."""
-        self._translate_widget_content(widget_instance, widget_id)
-        self._connect_widget_signals(widget_instance, widget_id)
-        self._start_translation_monitoring()
-        return False
     def update_widget_header(self):
         """Update header bar with widget-specific controls on opposite side of window controls."""
         if not self.hide_sidebar or not hasattr(self, 'content_header'):
@@ -1382,6 +1478,8 @@ Hidden=false
             return _translate_with_patterns_helper(message, widget_id)
         setattr(module, '_', injected_underscore)
         setattr(module, 'sudo_manager', get_sudo_manager())
+        setattr(module, 'translate_dialog', lambda dialog: _translate_dialog(dialog, selected_key))
+        setattr(module, 'translate_window', lambda window: _translate_window(window, selected_key))
         filename = os.path.basename(filepath)
         return module, filename
     def _prepare_and_extract_module(self, module, module_name, filepath):
@@ -1413,7 +1511,10 @@ Hidden=false
                 try:
                     widget_instance = attribute(hide_sidebar=self.hide_sidebar, window=self, voice_autostart=self.voice_autostart, conversation_id=self.conversation_id)
                 except TypeError:
-                    widget_instance = attribute()
+                    try:
+                        widget_instance = attribute(hide_sidebar=self.hide_sidebar, window=self)
+                    except TypeError:
+                        widget_instance = attribute()
                 if hasattr(widget_instance, 'widgetname'):
                     self._register_widget(widget_instance, filename)  
             except Exception as e:
@@ -1504,8 +1605,6 @@ Hidden=false
         """Handle window close request."""
         if getattr(self, 'is_command_locked', False):
             return True 
-        if hasattr(self, '_stop_translation_monitoring'):
-            self._stop_translation_monitoring()
         for widget in self.loaded_widgets.values():
             if hasattr(widget, '_cleanup_screenshot_tmp'):
                 widget._cleanup_screenshot_tmp()
@@ -1513,8 +1612,7 @@ Hidden=false
     def _on_widget_selected(self, listbox, row):
         """Handle widget selection from the sidebar with debouncing."""
         if getattr(self, 'is_command_locked', False):
-            if not hasattr(row, 'widget_name'):
-                return
+            return
         if self.selection_timeout_id:
             GLib.source_remove(self.selection_timeout_id)
         self.pending_widget_selection = row
@@ -1529,7 +1627,6 @@ Hidden=false
         if widget_name not in self.loaded_widgets:
             self.selection_timeout_id = None
             return False
-        self._stop_translation_monitoring()
         widget_instance = self.loaded_widgets[widget_name]
         self.active_widget = widget_instance
         self.active_widget_id = self.widget_metadata.get(widget_name, {}).get('widget_id')
@@ -1552,10 +1649,6 @@ Hidden=false
         else:
             self.widget_stack.set_visible_child_name(stack_page_name)
         self._visible_widget_name = widget_name
-        if self.active_widget_id and isinstance(widget_instance, Gtk.Widget):
-            self._translate_widget_content(widget_instance, self.active_widget_id)
-            self._connect_widget_signals(widget_instance, self.active_widget_id)
-        self._start_translation_monitoring()
         display_name = row.display_name if hasattr(row, 'display_name') else widget_name
         self.content_page.set_title(display_name)
         if self._compact_mode:
@@ -1600,170 +1693,7 @@ Hidden=false
         error_label.set_hexpand(True)
         error_label.add_css_class("dim-label")
         return error_label
-    def _start_translation_monitoring(self):
-        """Start continuous monitoring for dynamic text changes."""
-        if self.active_widget and self.active_widget_id:
-            self._stop_translation_monitoring()
-            self.translation_timer = GLib.timeout_add(100, self._monitor_widget_changes)
-    def _stop_translation_monitoring(self):
-        """Stop monitoring the current widget."""
-        if hasattr(self, 'translation_timer') and self.translation_timer:
-            GLib.source_remove(self.translation_timer)
-            self.translation_timer = None
-    def _connect_widget_signals(self, widget, widget_id):
-        """Connect to widget signals for immediate translation updates."""
-        try:
-            if isinstance(widget, Gtk.Widget):
-                widget.connect("notify", lambda w, pspec: self._on_widget_property_changed(w, pspec, widget_id))
-            if hasattr(widget, 'get_first_child'):
-                child = widget.get_first_child()
-                while child:
-                    self._connect_widget_signals(child, widget_id)
-                    child = child.get_next_sibling()
-            elif hasattr(widget, 'get_child'):
-                child = widget.get_child()
-                if child:
-                    self._connect_widget_signals(child, widget_id)
-        except Exception:
-            pass
-    def _on_widget_property_changed(self, widget, param_spec, widget_id):
-        """Handle widget property changes for immediate translation."""
-        if param_spec.name in ['label', 'text', 'placeholder-text', 'title', 'subtitle', 'description']:
-            GLib.idle_add(lambda: self._translate_single_widget(widget, widget_id))    
-    def _monitor_widget_changes(self):
-        """Monitor and translate any text changes in the active widget."""
-        if self.active_widget and self.active_widget_id:
-            try:
-                if isinstance(self.active_widget, Gtk.Widget):
-                    self._translate_widget_content(self.active_widget, self.active_widget_id)
-            except Exception:
-                pass  
-            return True  
-        else:
-            return False  
-    def _translate_widget_content(self, widget, widget_id):
-        """Translate all text in the widget using its specific dictionary."""
-        self._translate_widget_recursive(widget, widget_id)
-    def _translate_widget_recursive(self, widget, widget_id):
-        """Recursively translate a widget and all its children."""
-        try:
-            self._translate_single_widget(widget, widget_id)
-            if hasattr(widget, 'get_first_child'):
-                child = widget.get_first_child()
-                while child:
-                    self._translate_widget_recursive(child, widget_id)
-                    child = child.get_next_sibling()
-            elif hasattr(widget, 'get_child'):
-                child = widget.get_child()
-                if child:
-                    self._translate_widget_recursive(child, widget_id)
-        except Exception:
-            pass  
-    def _translate_markup_content(self, markup_text, widget_id):
-        """Enhanced markup translation that handles both dynamic patterns and multiline descriptions."""
-        markup_text = _translate_with_patterns_helper(markup_text, widget_id)
-        def replace_text(match):
-            text_content = match.group(1)
-            if text_content.strip():
-                translated = _(text_content.strip(), widget_id)
-                if translated != text_content.strip():
-                    leading_space = text_content[:len(text_content) - len(text_content.lstrip())]
-                    trailing_space = text_content[len(text_content.rstrip()):]
-                    return ">" + leading_space + translated + trailing_space + "<"
-            return ">" + text_content + "<"
-        return re.sub(r'>([^<]+)<', replace_text, markup_text)
-    def _translate_single_widget(self, widget, widget_id):
-        """Translate text in a single widget."""
-        try:
-            if isinstance(widget, Gtk.Label):
-                if widget.get_use_markup():
-                    markup = widget.get_label()  
-                    if markup:
-                        translated_markup = self._translate_markup_content(markup, widget_id)
-                        if translated_markup != markup:
-                            widget.set_markup(translated_markup)
-                else:
-                    text = widget.get_text()
-                    if text:
-                        translated = _translate_with_patterns_helper(text, widget_id)
-                        if translated != text:
-                            widget.set_text(translated)
-            elif isinstance(widget, Gtk.Button):
-                label = widget.get_label()
-                if label:
-                    translated = _translate_with_patterns_helper(label, widget_id)
-                    if translated != label:
-                        widget.set_label(translated)
-            elif isinstance(widget, (Gtk.Entry, Gtk.SearchEntry, Gtk.PasswordEntry)):
-                placeholder = widget.get_placeholder_text()
-                if placeholder:
-                    translated = _translate_with_patterns_helper(placeholder, widget_id)
-                    if translated != placeholder:
-                        widget.set_placeholder_text(translated)
-            elif isinstance(widget, Adw.ActionRow):
-                title = widget.get_title()
-                if title:
-                    translated = _translate_with_patterns_helper(title, widget_id)
-                    if translated != title:
-                        widget.set_title(translated)
-                subtitle = widget.get_subtitle()
-                if subtitle:
-                    translated = _translate_with_patterns_helper(subtitle, widget_id)
-                    if translated != subtitle:
-                        widget.set_subtitle(translated)
-                if isinstance(widget, Adw.ComboRow):
-                    combo_model = widget.get_model()
-                    if isinstance(combo_model, Gtk.StringList):
-                        for i in range(combo_model.get_n_items()):
-                            s = combo_model.get_string(i)
-                            if s:
-                                t = _translate_with_patterns_helper(s, widget_id)
-                                if t != s:
-                                    combo_model.splice(i, 1, [t])
-            elif isinstance(widget, Adw.PreferencesRow):
-                title = widget.get_title()
-                if title:
-                    translated = _translate_with_patterns_helper(title, widget_id)
-                    if translated != title:
-                        widget.set_title(translated)
-            elif isinstance(widget, Adw.PreferencesGroup):
-                title = widget.get_title()
-                if title:
-                    translated = _translate_with_patterns_helper(title, widget_id)
-                    if translated != title:
-                        widget.set_title(translated)
-                desc = widget.get_description()
-                if desc:
-                    translated = _translate_with_patterns_helper(desc, widget_id)
-                    if translated != desc:
-                        widget.set_description(translated)
-            elif isinstance(widget, Adw.PreferencesPage):
-                title = widget.get_title()
-                if title:
-                    translated = _translate_with_patterns_helper(title, widget_id)
-                    if translated != title:
-                        widget.set_title(translated)
-            elif isinstance(widget, Adw.StatusPage):
-                title = widget.get_title()
-                if title:
-                    translated = _translate_with_patterns_helper(title, widget_id)
-                    if translated != title:
-                        widget.set_title(translated)
-                desc = widget.get_description()
-                if desc:
-                    translated = _translate_with_patterns_helper(desc, widget_id)
-                    if translated != desc:
-                        widget.set_description(translated)
-            elif isinstance(widget, (Gtk.Window, Adw.ApplicationWindow)):
-                title = widget.get_title()
-                if title:
-                    translated = _(title, widget_id)
-                    if translated != title:
-                        widget.set_title(translated)
-            if hasattr(widget, 'get_visible') and widget.get_visible():
-                pass
-        except Exception:
-            pass  
+
     def _apply_saved_compact(self) -> bool:
         """Apply saved compact mode on startup (no animation)."""
         self._set_compact_mode(True, animated=False)
@@ -2535,6 +2465,7 @@ class WidgetLoaderApp(Adw.Application):
         self.voice_autostart: bool = False
         self.compact_mode: bool = False
         self.conversation_id: Optional[str] = None
+        self.language: Optional[str] = None
         self.window: Optional[WidgetLoaderWindow] = None
         self._parse_arguments()
     def _parse_arguments(self):
@@ -2577,6 +2508,14 @@ class WidgetLoaderApp(Adw.Application):
                 except StopIteration:
                     print("Error: --conversation requires a conversation id")
                     sys.exit(1)
+            elif arg == '--lang' or arg == '-l':
+                try:
+                    lang_arg: str = next(args_iter)
+                    self.language = str(lang_arg)
+                    print(f"Language override: {self.language}")
+                except StopIteration:
+                    print("Error: --lang requires a language code (e.g. de_DE, fr_FR)")
+                    sys.exit(1)
             elif arg == '--version' or arg == '-v':
                 print(f"Linexin Tools v{APP_VERSION}")
                 sys.exit(0)
@@ -2586,10 +2525,13 @@ class WidgetLoaderApp(Adw.Application):
         sys.argv.clear()
         sys.argv.extend(new_argv)
         print(f"Cleaned arguments for GTK: {sys.argv}")
-        print(f"Final settings: hide_sidebar={self.hide_sidebar}, target_widget={self.target_widget}, voice_autostart={self.voice_autostart}, compact_mode={self.compact_mode}, conversation_id={self.conversation_id}")
+        print(f"Final settings: hide_sidebar={self.hide_sidebar}, target_widget={self.target_widget}, voice_autostart={self.voice_autostart}, compact_mode={self.compact_mode}, conversation_id={self.conversation_id}, language={self.language}")
 
     def on_activate(self, app: Adw.Application) -> None:
         """Handle application activation."""
+        if self.language:
+            global _language_override
+            _language_override = self.language
         # Compact voice mode — launch the small floating pill bar instead
         if self.compact_mode and self.target_widget:
             self._launch_compact_voice(app)
@@ -2652,6 +2594,8 @@ class WidgetLoaderApp(Adw.Application):
             return _translate_with_patterns_helper(message, widget_id)
         setattr(module, '_', injected_underscore)
         setattr(module, 'sudo_manager', get_sudo_manager())
+        setattr(module, 'translate_dialog', lambda dialog: _translate_dialog(dialog, selected_key))
+        setattr(module, 'translate_window', lambda window: _translate_window(window, selected_key))
         spec.loader.exec_module(module)
         compact_cls = getattr(module, 'CompactVoiceWindow', None)
         if compact_cls is None:
