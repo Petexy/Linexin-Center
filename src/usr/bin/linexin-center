@@ -689,6 +689,7 @@ class WidgetLoaderWindow(_WindowBase):
         self.pending_widget_selection: Any = None
         self._compact_mode: bool = False
         self._saved_compact: bool = bool(_load_config().get("compact_mode", False))
+        self._auto_compact_active: bool = False
         self._edit_mode: bool = False
         self._hidden_widgets: set = set(_load_config().get("hidden_widgets", []))
         self._sidebar_rows: list[Any] = []
@@ -711,6 +712,9 @@ class WidgetLoaderWindow(_WindowBase):
         # Apply saved compact mode after UI is built
         if not self.hide_sidebar and self._saved_compact:
             GLib.idle_add(self._apply_saved_compact)
+        # Monitor window width for auto-compact mode
+        if not self.hide_sidebar:
+            self.connect("notify::default-width", self._on_window_width_changed)
     def resize_window(self, width, height):
         """Custom resize method that tries different approaches"""
         try:
@@ -906,9 +910,9 @@ class WidgetLoaderWindow(_WindowBase):
         )
         self.sidebar_container.append(self._sidebar_bottom_box)
         self._setup_sidebar_context_menu()
-        sidebar_handle = Gtk.WindowHandle()
-        sidebar_handle.set_child(self.sidebar_container)
-        self.sidebar_page.set_child(sidebar_handle)
+        self._sidebar_handle = Gtk.WindowHandle()
+        self._sidebar_handle.set_child(self.sidebar_container)
+        self.sidebar_page.set_child(self._sidebar_handle)
     def _setup_sidebar_context_menu(self):
         menu = Gio.Menu()
         item = Gio.MenuItem.new(_("Create a shortcut"), "win.create_shortcut")
@@ -1699,6 +1703,20 @@ Hidden=false
         self._set_compact_mode(True, animated=False)
         return False
 
+    def _on_window_width_changed(self, window: Any, pspec: Any) -> None:
+        """Auto-enable compact mode when window width < 1000px."""
+        width = self.get_default_size()[0]
+        if width > 0 and width < 1000:
+            if not self._compact_mode:
+                self._auto_compact_active = True
+                self._set_compact_mode(True, animated=True)
+        else:
+            if self._auto_compact_active:
+                self._auto_compact_active = False
+                saved = bool(_load_config().get("compact_mode", False))
+                if not saved:
+                    self._set_compact_mode(False, animated=True)
+
     def _on_compact_toggle_clicked(self, button: Any) -> None:
         """Handle manual compact mode toggle button click."""
         new_compact: bool = not self._compact_mode
@@ -1706,6 +1724,7 @@ Hidden=false
         config: Dict[str, Any] = _load_config()
         config["compact_mode"] = new_compact
         _save_config(config)
+        self._auto_compact_active = False
 
     def _on_edit_toggle_clicked(self, button: Any) -> None:
         """Toggle edit mode for rearranging and hiding widgets."""
@@ -1723,6 +1742,10 @@ Hidden=false
         self._drag_controllers: Dict[str, list] = {}
         self._edit_row_anims: list = []
         self._compact_toggle_btn.set_sensitive(False)
+
+        # Disable window dragging via sidebar so DnD reordering works
+        self._sidebar_handle.set_child(None)
+        self.sidebar_page.set_child(self.sidebar_container)
 
         # Animate edit button: spin + morph to "Done" style
         self._edit_toggle_btn.add_css_class("edit-btn-spinning")
@@ -1768,6 +1791,11 @@ Hidden=false
         """Exit edit mode with smooth Material-style animations."""
         self._edit_mode = False
         self._compact_toggle_btn.set_sensitive(True)
+
+        # Re-enable window dragging via sidebar
+        self.sidebar_page.set_child(None)
+        self._sidebar_handle.set_child(self.sidebar_container)
+        self.sidebar_page.set_child(self._sidebar_handle)
 
         # Animate edit button back
         self._edit_toggle_btn.remove_css_class("edit-btn-active")
@@ -2191,7 +2219,7 @@ Hidden=false
 
         def _swap_to_normal() -> None:
             if hasattr(self, '_sidebar_header_title'):
-                self._sidebar_header_title.set_visible(True)
+                self._sidebar_header_title.set_visible(not IS_PLASMA_OR_HYPRLAND)
             self._widget_list_container.set_visible(True)
             self._compact_scroll.set_visible(False)
             self._compact_strip.set_visible(False)
