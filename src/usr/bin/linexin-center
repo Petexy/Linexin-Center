@@ -691,6 +691,7 @@ class WidgetLoaderWindow(_WindowBase):
         self._saved_compact: bool = bool(_load_config().get("compact_mode", False))
         self._auto_compact_active: bool = False
         self._edit_mode: bool = False
+        self._edit_was_auto_compact: bool = False
         self._hidden_widgets: set = set(_load_config().get("hidden_widgets", []))
         self._sidebar_rows: list[Any] = []
         self._compact_icon_buttons: list[Any] = []
@@ -1705,6 +1706,8 @@ Hidden=false
 
     def _on_window_width_changed(self, window: Any, pspec: Any) -> None:
         """Auto-enable compact mode when window width < 1000px."""
+        if self._edit_mode:
+            return
         width = self.get_default_size()[0]
         if width > 0 and width < 1000:
             if not self._compact_mode:
@@ -1736,7 +1739,11 @@ Hidden=false
     def _enter_edit_mode(self) -> None:
         """Enter edit mode with staggered iOS/Material-style animations."""
         # If in compact mode, switch to normal first
+        self._edit_was_auto_compact = self._auto_compact_active
         if self._compact_mode:
+            # Disable content widget min-width so sidebar can extend in narrow windows
+            if self._auto_compact_active:
+                self._apply_edit_mode_content_shrink()
             self._set_compact_mode(False, animated=True)
         self._edit_mode = True
         self._drag_controllers: Dict[str, list] = {}
@@ -1791,6 +1798,15 @@ Hidden=false
         """Exit edit mode with smooth Material-style animations."""
         self._edit_mode = False
         self._compact_toggle_btn.set_sensitive(True)
+        # Restore content widget min-width constraints
+        self._remove_edit_mode_content_shrink()
+        # Re-evaluate auto-compact after edit mode exits
+        if getattr(self, '_edit_was_auto_compact', False):
+            self._edit_was_auto_compact = False
+            width = self.get_default_size()[0]
+            if width > 0 and width < 1000:
+                self._auto_compact_active = True
+                GLib.timeout_add(400, lambda: self._set_compact_mode(True, animated=True) or False)
 
         # Re-enable window dragging via sidebar
         self.sidebar_page.set_child(None)
@@ -2123,6 +2139,32 @@ Hidden=false
                 btn.add_css_class("compact-icon-selected")
             else:
                 btn.remove_css_class("compact-icon-selected")
+
+    def _apply_edit_mode_content_shrink(self) -> None:
+        """Remove min-width constraints on content widgets so the sidebar can extend in narrow windows."""
+        if not hasattr(self, '_edit_shrink_css_provider'):
+            self._edit_shrink_css_provider = Gtk.CssProvider()
+        css = b"""
+            .buttons_all { min-width: 0; }
+            .compact-icon-btn { min-width: 0; }
+            .edit-move-btn, .edit-vis-btn { min-width: 0; }
+        """
+        self._edit_shrink_css_provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(
+            self.get_display(),
+            self._edit_shrink_css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2
+        )
+        self.content_display.set_size_request(0, -1)
+
+    def _remove_edit_mode_content_shrink(self) -> None:
+        """Restore min-width constraints on content widgets."""
+        if hasattr(self, '_edit_shrink_css_provider'):
+            Gtk.StyleContext.remove_provider_for_display(
+                self.get_display(),
+                self._edit_shrink_css_provider
+            )
+        self.content_display.set_size_request(-1, -1)
 
     def _set_compact_mode(self, compact: bool, animated: bool=True) -> None:
         """Switch between compact and normal sidebar modes."""
