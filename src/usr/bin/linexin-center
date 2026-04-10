@@ -681,6 +681,11 @@ class WidgetLoaderWindow(_WindowBase):
         self.widget_metadata: Dict[str, Dict[str, Any]] = {}     
         self.widget_order: list[str] = []          
         self.widget_index: Dict[str, int] = {}          
+        self._deferred_widgets: Dict[str, Dict[str, str]] = {}  # widget_name -> {filepath, module_name, filename}
+        self._preload_queue: list[str] = []
+        self._bg_load_in_progress: set = set()
+        self._activate_after_load: Optional[str] = None
+        self._loading_spinner_page: Optional[str] = None
         self._visible_widget_name: Optional[str] = None  
         self.active_widget: Any = None
         self.active_widget_id: Optional[str] = None
@@ -1226,6 +1231,7 @@ Hidden=false
             self._select_target_widget()
         elif not self.hide_sidebar:
             self._auto_select_first_widget()
+            self._start_background_preload()
     def _staged_load_step1(self) -> bool:
         """Stage 1: Find target file, then load module in a background thread."""
         target_w = self.target_widget
@@ -1293,7 +1299,7 @@ Hidden=false
             traceback.print_exc()
         return False
     def _load_all_widgets_normal(self):
-        """Load all widgets (normal mode)."""
+        """Load all widgets lazily (scan metadata only, defer import to selection)."""
         python_files = [f for f in os.listdir(WIDGET_DIRECTORY) if f.endswith(".py")]
 
         # Load saved widget order from config
@@ -1312,12 +1318,17 @@ Hidden=false
         for filename in python_files:
             filepath: str = os.path.join(WIDGET_DIRECTORY, filename)
             module_name: str = filename[:-3] # type: ignore
-            self._load_widget_from_file(filepath, module_name)
+            metadata = self._scan_widget_metadata(filepath)
+            if metadata:
+                self._register_deferred_widget(metadata, filename, filepath, module_name)
+            else:
+                # Fallback: fully load widgets whose metadata can't be parsed
+                self._load_widget_from_file(filepath, module_name)
     def refresh_widgets(self):
         """Re-scan the widgets directory and load any new widget files."""
         if not os.path.exists(WIDGET_DIRECTORY):
             return
-        # Collect filenames already loaded
+        # Collect filenames already loaded or deferred
         loaded_filenames = set()
         for meta in self.widget_metadata.values():
             loaded_filenames.add(meta.get('filename', ''))
@@ -1329,7 +1340,11 @@ Hidden=false
         for filename in new_files:
             filepath = os.path.join(WIDGET_DIRECTORY, filename)
             module_name = filename[:-3]
-            self._load_widget_from_file(filepath, module_name)
+            metadata = self._scan_widget_metadata(filepath)
+            if metadata:
+                self._register_deferred_widget(metadata, filename, filepath, module_name)
+            else:
+                self._load_widget_from_file(filepath, module_name)
     def _load_target_widget_only(self):
         """Load only the target widget specified via command line."""
         target_w = self.target_widget
@@ -1457,6 +1472,172 @@ Hidden=false
             self._prepare_and_extract_module(module, module_name, filepath)
         except Exception:
             traceback.print_exc()
+    def _scan_widget_metadata(self, filepath):
+        """Parse a widget source file to extract widgetname and widgeticon without importing."""
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                source = f.read()
+        except Exception:
+            return None
+        # Match self.widgetname = "..." or self.widgetname = '...'
+        name_match = re.search(r'self\.widgetname\s*=\s*["\'](.+?)["\']', source)
+        if not name_match:
+            return None
+        widget_name = name_match.group(1)
+        # Match self.widgeticon = "..." or self.widgeticon = '...'
+        icon_path = None
+        icon_match = re.search(r'self\.widgeticon\s*=\s*["\'](.+?)["\']', source)
+        if icon_match:
+            icon_path = icon_match.group(1)
+        # Also check for indirect assignment: self.widgeticon = self.<var>
+        var_match = re.search(r'self\.widgeticon\s*=\s*self\.(\w+)', source)
+        if var_match:
+            var_name = var_match.group(1)
+            var_val_match = re.search(r'self\.' + re.escape(var_name) + r'\s*=\s*["\'](.+?)["\']', source)
+            if var_val_match:
+                candidate = var_val_match.group(1)
+                # Prefer file paths over symbolic icon names
+                if '/' in candidate or candidate.endswith('.svg') or candidate.endswith('.png'):
+                    icon_path = candidate
+        # Match self.widget_id = "..." or self.widget_id = '...'
+        id_match = re.search(r'self\.widget_id\s*=\s*["\'](.+?)["\']', source)
+        widget_id = id_match.group(1) if id_match else widget_name.lower().replace(' ', '_')
+        return {'widget_name': widget_name, 'icon_path': icon_path, 'widget_id': widget_id}
+    def _register_deferred_widget(self, metadata, filename, filepath, module_name):
+        """Register a widget in the sidebar for lazy loading without importing the module."""
+        widget_name = metadata['widget_name']
+        icon_path = metadata['icon_path']
+        widget_id = metadata['widget_id']
+        self._deferred_widgets[widget_name] = {
+            'filepath': str(filepath),
+            'module_name': str(module_name),
+            'filename': str(filename),
+        }
+        self.widget_metadata[widget_name] = {
+            'icon_path': str(icon_path) if icon_path else None,
+            'widget_id': str(widget_id),
+            'filename': str(filename)
+        }
+        if widget_name not in self.widget_index:
+            self.widget_order.append(widget_name)
+            self.widget_index[widget_name] = len(self.widget_order) - 1
+        is_hidden = str(filename) in self._hidden_widgets
+        translated_name = _(widget_name, widget_id)
+        self._add_widget_to_sidebar(widget_name, translated_name, icon_path, is_hidden)
+    def _start_background_preload(self):
+        """Start preloading all deferred widgets in the background."""
+        self._preload_queue = list(self._deferred_widgets.keys())
+        if self._preload_queue:
+            GLib.timeout_add(200, self._preload_next)
+    def _preload_next(self):
+        """Pick the next deferred widget and start importing it in a background thread."""
+        if self._bg_load_in_progress:
+            return False
+        while self._preload_queue:
+            name = self._preload_queue.pop(0)
+            if name in self._deferred_widgets:
+                self._start_bg_import(name)
+                return False
+        return False
+    def _start_bg_import(self, widget_name):
+        """Start importing a widget module in a background thread."""
+        if widget_name not in self._deferred_widgets:
+            return
+        self._bg_load_in_progress.add(widget_name)
+        info = self._deferred_widgets[widget_name]
+        filepath = info['filepath']
+        module_name = info['module_name']
+        def _bg():
+            try:
+                spec = importlib.util.spec_from_file_location(module_name, filepath)
+                if not spec or not getattr(spec, 'loader', None):
+                    GLib.idle_add(self._finish_bg_load, widget_name, None)
+                    return
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                GLib.idle_add(self._finish_bg_load, widget_name, module)
+            except Exception:
+                traceback.print_exc()
+                GLib.idle_add(self._finish_bg_load, widget_name, None)
+        threading.Thread(target=_bg, daemon=True).start()
+    def _finish_bg_load(self, widget_name, module):
+        """Finish loading a widget module on the main thread."""
+        self._bg_load_in_progress.discard(widget_name)
+        if widget_name in self._deferred_widgets:
+            if module is not None:
+                info = self._deferred_widgets.pop(widget_name)
+                try:
+                    module, filename = self._prepare_module(module, info['module_name'], info['filepath'])
+                    ctx = GLib.MainContext.default()
+                    while ctx.pending():
+                        ctx.iteration(False)
+                    self._extract_widgets_from_module(module, filename)
+                    while ctx.pending():
+                        ctx.iteration(False)
+                except Exception:
+                    traceback.print_exc()
+            else:
+                self._deferred_widgets.pop(widget_name, None)
+        # Remove spinner page if present
+        if self._loading_spinner_page:
+            child = self.widget_stack.get_child_by_name(self._loading_spinner_page)
+            if child:
+                self.widget_stack.remove(child)
+            self._loading_spinner_page = None
+        # Activate widget if user requested it
+        if self._activate_after_load == widget_name and widget_name in self.loaded_widgets:
+            self._activate_after_load = None
+            self._activate_preloaded_widget(widget_name)
+        # Continue background preloading
+        GLib.timeout_add(50, self._preload_next)
+        return False
+    def _activate_preloaded_widget(self, widget_name):
+        """Activate a freshly loaded widget in the content area."""
+        widget_instance = self.loaded_widgets[widget_name]
+        self.active_widget = widget_instance
+        self.active_widget_id = self.widget_metadata.get(widget_name, {}).get('widget_id')
+        filename = self.widget_metadata.get(widget_name, {}).get('filename', widget_name)
+        stack_page_name = self._generate_stack_page_name(filename)
+        if not self.widget_stack.get_child_by_name(stack_page_name):
+            self._add_widget_to_stack(widget_instance, widget_name, stack_page_name)
+        self.widget_stack.set_visible_child_name(stack_page_name)
+        self._visible_widget_name = widget_name
+        row = self.widget_list.get_first_child()
+        while row:
+            if hasattr(row, 'widget_name') and getattr(row, 'widget_name', '') == widget_name:
+                display_name = row.display_name if hasattr(row, 'display_name') else widget_name
+                self.content_page.set_title(display_name)
+                break
+            row = row.get_next_sibling()
+        if self._compact_mode:
+            self._update_compact_selection(widget_name)
+    def _load_deferred_widget(self, widget_name):
+        """Handle user-initiated load of a deferred widget (shows spinner)."""
+        if widget_name not in self._deferred_widgets:
+            return False
+        # Show a loading spinner in the stack
+        loading_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        loading_box.set_valign(Gtk.Align.CENTER)
+        loading_box.set_halign(Gtk.Align.CENTER)
+        loading_spinner = Gtk.Spinner()
+        loading_spinner.set_size_request(32, 32)
+        loading_spinner.start()
+        loading_box.append(loading_spinner)
+        loading_box.set_vexpand(True)
+        loading_box.set_hexpand(True)
+        loading_page_name = f"_loading_{widget_name}"
+        self.widget_stack.add_named(loading_box, loading_page_name)
+        self.widget_stack.set_visible_child_name(loading_page_name)
+        self._loading_spinner_page = loading_page_name
+        self._activate_after_load = widget_name
+        # If this widget is already being imported in background, just wait
+        if widget_name in self._bg_load_in_progress:
+            return True
+        # Remove from preload queue if present and start loading immediately
+        if widget_name in self._preload_queue:
+            self._preload_queue.remove(widget_name)
+        self._start_bg_import(widget_name)
+        return True
     def _prepare_module(self, module, module_name, filepath):
         """Set up translation and sudo on a loaded module. Returns (module, filename)."""
         filepath_str: str = str(filepath)
@@ -1498,6 +1679,8 @@ Hidden=false
         """Extract widget classes from a loaded module."""
         ctx = GLib.MainContext.default()
         for attribute_name in dir(module):
+            if attribute_name.startswith('_'):
+                continue
             attribute = getattr(module, attribute_name)
             if not isinstance(attribute, type):
                 continue
@@ -1530,6 +1713,8 @@ Hidden=false
     def _register_widget(self, widget_instance, filename):
         """Register a widget and add it to the sidebar."""
         widget_name = widget_instance.widgetname
+        # Check if sidebar entry already exists from deferred registration
+        already_in_sidebar = widget_name in self.widget_metadata
         self.loaded_widgets[widget_name] = widget_instance
         icon_path = getattr(widget_instance, 'widgeticon', None)
         widget_id = getattr(widget_instance, 'widget_id', widget_name.lower().replace(' ', '_'))
@@ -1541,9 +1726,10 @@ Hidden=false
         if widget_name not in self.widget_index:
             self.widget_order.append(widget_name)
             self.widget_index[widget_name] = len(self.widget_order) - 1
-        is_hidden = str(filename) in self._hidden_widgets
-        translated_name = _(widget_name, widget_id)
-        self._add_widget_to_sidebar(widget_name, translated_name, icon_path, is_hidden)
+        if not already_in_sidebar:
+            is_hidden = str(filename) in self._hidden_widgets
+            translated_name = _(widget_name, widget_id)
+            self._add_widget_to_sidebar(widget_name, translated_name, icon_path, is_hidden)
     def _add_widget_to_sidebar(self, widget_name, display_name, icon_path=None, is_hidden=False):
         """Add a widget entry to the sidebar list."""
         row = Adw.ActionRow()
@@ -1629,6 +1815,11 @@ Hidden=false
             self.selection_timeout_id = None
             return False
         widget_name = row.widget_name
+        # If the widget is deferred, trigger lazy loading
+        if widget_name not in self.loaded_widgets and widget_name in self._deferred_widgets:
+            self._load_deferred_widget(widget_name)
+            self.selection_timeout_id = None
+            return False
         if widget_name not in self.loaded_widgets:
             self.selection_timeout_id = None
             return False
@@ -1710,10 +1901,12 @@ Hidden=false
             return
         width = self.get_default_size()[0]
         if width > 0 and width < 1000:
-            if not self._compact_mode:
+            if not self._compact_mode and not getattr(self, '_user_toggled_compact', False):
                 self._auto_compact_active = True
                 self._set_compact_mode(True, animated=True)
         else:
+            # Window is wide enough — reset the manual override flag
+            self._user_toggled_compact = False
             if self._auto_compact_active:
                 self._auto_compact_active = False
                 saved = bool(_load_config().get("compact_mode", False))
@@ -1728,6 +1921,7 @@ Hidden=false
         config["compact_mode"] = new_compact
         _save_config(config)
         self._auto_compact_active = False
+        self._user_toggled_compact = True
 
     def _on_edit_toggle_clicked(self, button: Any) -> None:
         """Toggle edit mode for rearranging and hiding widgets."""
