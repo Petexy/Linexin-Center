@@ -21,4 +21,8 @@ translations = {
     "Failed to load system information": "सिस्टम जानकारी लोड करने में विफल",
     "Fastfetch View": "Fastfetch दृश्य",
     "Row View": "पंक्ति दृश्य",
+    "System": "सिस्टम",
+    "Session": "सत्र",
+    "Hardware": "हार्डवेयर",
+    "Storage & Memory": "भंडारण और स्मृति",
 }

@@ -21,4 +21,8 @@ translations = {
     "Failed to load system information": "Systeminformationen konnten nicht geladen werden",
     "Fastfetch View": "Fastfetch-Ansicht",
     "Row View": "Zeilenansicht",
+    "System": "System",
+    "Session": "Sitzung",
+    "Hardware": "Hardware",
+    "Storage & Memory": "Speicher & Arbeitsspeicher",
 }

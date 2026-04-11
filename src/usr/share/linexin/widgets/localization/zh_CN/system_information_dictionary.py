@@ -21,4 +21,8 @@ translations = {
     "Failed to load system information": "无法加载系统信息",
     "Fastfetch View": "Fastfetch 视图",
     "Row View": "行视图",
+    "System": "系统",
+    "Session": "会话",
+    "Hardware": "硬件",
+    "Storage & Memory": "存储和内存",
 }

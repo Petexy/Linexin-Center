@@ -21,4 +21,8 @@ translations = {
     "Failed to load system information": "Error al cargar la información del sistema",
     "Fastfetch View": "Vista Fastfetch",
     "Row View": "Vista en Filas",
+    "System": "Sistema",
+    "Session": "Sesión",
+    "Hardware": "Hardware",
+    "Storage & Memory": "Almacenamiento y Memoria",
 }

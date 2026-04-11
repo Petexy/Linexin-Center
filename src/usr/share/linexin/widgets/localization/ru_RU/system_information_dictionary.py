@@ -21,4 +21,8 @@ translations = {
     "Failed to load system information": "Не удалось загрузить системную информацию",
     "Fastfetch View": "Вид Fastfetch",
     "Row View": "Построчный вид",
+    "System": "Система",
+    "Session": "Сессия",
+    "Hardware": "Оборудование",
+    "Storage & Memory": "Хранилище и Память",
 }
