@@ -1313,8 +1313,8 @@ Hidden=false
             new_files.sort(key=lambda f: os.path.getmtime(os.path.join(WIDGET_DIRECTORY, f)))
             python_files = known_files + new_files
         else:
-            # No saved order — sort by date added (modification time)
-            python_files.sort(key=lambda f: os.path.getmtime(os.path.join(WIDGET_DIRECTORY, f)))
+            # No saved order — sort alphabetically by filename
+            python_files.sort()
         for filename in python_files:
             filepath: str = os.path.join(WIDGET_DIRECTORY, filename)
             module_name: str = filename[:-3] # type: ignore
