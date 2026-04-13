@@ -2,25 +2,28 @@
 
 pkgname=linexin-center
 pkgver=3.0.0.r
-pkgrel=1
-_currentdate=$(date +"%Y-%m-%d%H-%M-%S")
+pkgrel=3
 pkgdesc='Linexin Center'
 url='https://github.com/Petexy'
-arch=(x86_64)
+arch=('x86_64')
 license=('GPL-3.0')
 depends=(
-  python-gobject
-  gtk4
-  libadwaita
-  python
-)
-makedepends=(
+  'python-gobject'
+  'gtk4'
+  'libadwaita'
+  'python'
+  'python-psutil'
+  'python-distro'
 )
 
 package() {
-   mkdir -p ${pkgdir}/usr/share/linexin/widgets
-   mkdir -p ${pkgdir}/usr/bin
-   mkdir -p ${pkgdir}/usr/share/applications
-   mkdir -p ${pkgdir}/usr/share/icons   
-   cp -rf ${srcdir}/usr/ ${pkgdir}/
+    cd "${srcdir}"
+
+    find usr -type f | while IFS= read -r _file; do
+        if [[ "${_file}" == usr/bin/* ]]; then
+            install -Dm755 "${_file}" "${pkgdir}/${_file}"
+        else
+            install -Dm644 "${_file}" "${pkgdir}/${_file}"
+        fi
+    done
 }
