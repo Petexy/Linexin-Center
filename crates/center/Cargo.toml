@@ -1,0 +1,34 @@
+[package]
+name = "linexin-center"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Linexin Center — GTK4/Libadwaita host for native (.so) and Python widgets"
+
+[lib]
+name = "linexin_center"
+path = "src/lib.rs"
+
+[[bin]]
+name = "linexin-center"
+path = "src/main.rs"
+
+# Drives the real window in a compositor; skips itself unless LINEXIN_GUI_TESTS=1.
+[[test]]
+name = "gui"
+path = "tests/gui.rs"
+harness = false
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
+libloading = "0.8"
+libc = "0.2"
+serde_json = { version = "1", features = ["preserve_order"] }
+linexin-plugin-api = { path = "../plugin-api" }
+linexin-localization = { path = "../localization" }
+linexin-lxb = { path = "../lxb" }
+linexin-services = { path = "../services" }
+linexin-python-bridge = { path = "../python-bridge" }

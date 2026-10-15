@@ -1,0 +1,22 @@
+[package]
+name = "linexin-localization"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Runtime loader for Linexin Center *_dictionary.py translations"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
+libc = "0.2"
+regex = "1"
+
+[[test]]
+name = "detect_language"
+harness = false
+
+[[test]]
+name = "gtk_widgets"
+harness = false

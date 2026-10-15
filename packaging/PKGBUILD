@@ -1,0 +1,74 @@
+# Maintainer: Petexy <https://github.com/Petexy>
+#
+# Release package built from the checkout this file lives in:
+#   cd packaging && makepkg -si
+#
+# It keeps the original package name and file layout, so packages that ship
+# widgets and depend on linexin-center (linexin-updater, linpama, ...) stay
+# satisfied, and upgrading replaces the Python implementation in place
+# (z-system-information-widget.py becomes z-system-information-widget.so).
+# No provides/conflicts/replaces are needed for that.
+
+pkgname=linexin-center
+# 4.0.0: the Rust rewrite of the Python Linexin Center (3.0.0).
+pkgver=4.0.0
+pkgrel=1
+pkgdesc='Linexin Center'
+url='https://github.com/Petexy/Linexin-Center'
+arch=('x86_64')
+license=('GPL-3.0-or-later')
+depends=(
+  'gtk4'
+  'libadwaita'
+  'python-gobject'
+  # Unused by the Center itself now, but installed Python widgets (e.g. the
+  # updater imports distro) relied on the Python package pulling them in.
+  'python-psutil'
+  'python-distro'
+)
+# Opened with dlopen, never linked: without it (or when its window cannot
+# open) a LineXinBar session gets the GTK window like any other desktop.
+optdepends=('lxb-toolkit: the LineXinBar front end on LineXinBar sessions (liblxb_app.so)')
+makedepends=('cargo' 'python')
+
+_root="$(realpath "$startdir/..")"
+
+build() {
+  cd "$_root"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$_root/target}"
+  # Distribution builds must run on any x86-64 CPU: drop a host-specific
+  # target-cpu from makepkg.conf (e.g. CachyOS's "native") and pin the baseline.
+  export RUSTFLAGS="${RUSTFLAGS//-C target-cpu=native/} -C target-cpu=x86-64"
+  cargo build --release --locked --workspace
+}
+
+package() {
+  # The binary embeds CPython and links libpython3.X.so of the interpreter it
+  # was built against, so it must be rebuilt for every Python minor release.
+  # Pin the minor version; pacman then refuses a partial upgrade to a newer
+  # Python. Asked here, where makedepends are installed (a clean chroot has no
+  # python while this file is first read).
+  local pyver
+  pyver=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+  depends+=("python>=${pyver}" "python<${pyver%.*}.$((${pyver#*.} + 1))")
+
+  cd "$_root"
+  local release="${CARGO_TARGET_DIR:-$_root/target}/release"
+  local widgets="$pkgdir/usr/share/linexin/widgets"
+
+  install -Dm755 "$release/linexin-center" "$pkgdir/usr/bin/linexin-center"
+  install -Dm644 "$release/liblinexin_system_information.so" \
+    "$widgets/z-system-information-widget.so"
+
+  local dictionary
+  for dictionary in data/localization/*/*_dictionary.py; do
+    install -Dm644 "$dictionary" "$widgets/localization/${dictionary#data/localization/}"
+  done
+
+  install -Dm644 data/icons/github.petexy.linexincenter.svg \
+    "$pkgdir/usr/share/icons/github.petexy.linexincenter.svg"
+  install -Dm644 data/icons/computer-linexin.svg "$pkgdir/usr/share/icons/computer-linexin.svg"
+  install -Dm644 packaging/github.petexy.linexincenter.desktop \
+    "$pkgdir/usr/share/applications/github.petexy.linexincenter.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

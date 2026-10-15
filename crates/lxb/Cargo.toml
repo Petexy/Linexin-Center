@@ -1,0 +1,19 @@
+[package]
+name = "linexin-lxb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Binding to the LineXinBar lxb-toolkit C API, opened with dlopen at run time"
+
+[lib]
+name = "linexin_lxb"
+path = "src/lib.rs"
+
+[dependencies]
+libloading = "0.8"
+linexin-plugin-api = { path = "../plugin-api" }
+
+[dev-dependencies]
+libc = "0.2"

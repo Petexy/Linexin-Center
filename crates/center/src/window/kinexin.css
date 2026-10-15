@@ -1,0 +1,22 @@
+/* Original Kinexin overrides (KINEXIN_BAR_COLOR #31313A at 80%), loaded at
+   STYLE_PROVIDER_PRIORITY_USER + 1 on Plasma/Hyprland. */
+/* Override the global gtk.css window background so we control
+   opacity per-region: sidebar matches the deco bar exactly,
+   content stays opaque. */
+window,
+.sidebar-pane,
+.sidebar-pane > navigation-view-page {
+    background: transparent;
+}
+.kinexin-sidebar {
+    background-color: rgba(49, 49, 58, 0.8);
+}
+.kinexin-sidebar headerbar.flat {
+    background: transparent;
+}
+/* Keep content area opaque */
+.kinexin-content,
+.content-pane,
+.content-pane > navigation-view-page {
+    background-color: @window_bg_color;
+}

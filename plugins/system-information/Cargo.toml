@@ -1,0 +1,24 @@
+[package]
+name = "linexin-system-information"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Native System Information widget for Linexin Center"
+
+[lib]
+name = "linexin_system_information"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
+futures-channel = "0.3"
+libc = "0.2"
+linexin-lxb = { path = "../../crates/lxb" }
+linexin-plugin-api = { path = "../../crates/plugin-api" }
+regex = "1"
+
+[dev-dependencies]
+libloading = "0.8"

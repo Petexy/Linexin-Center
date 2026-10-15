@@ -1,0 +1,27 @@
+[workspace]
+members = [
+    "crates/center",
+    "crates/plugin-api",
+    "crates/localization",
+    "crates/services",
+    "crates/python-bridge",
+    "crates/lxb",
+    "plugins/demo",
+    "plugins/system-information",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-or-later"
+version = "4.0.0"
+repository = "https://github.com/Petexy/Linexin-Center"
+# Not for crates.io: the crates are built from this repository.
+publish = false
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

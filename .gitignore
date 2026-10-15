@@ -1,3 +1,12 @@
+/target/
+/build/
+/.agents/
 __pycache__/
 *.pyc
-*.pyo
+# makepkg output of packaging/PKGBUILD
+/packaging/src/
+/packaging/pkg/
+/packaging/*.pkg.tar.*
+
+# The file manager's own note about this folder, not the project's.
+.directory

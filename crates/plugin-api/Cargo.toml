@@ -1,0 +1,11 @@
+[package]
+name = "linexin-plugin-api"
+version.workspace = true
+edition.workspace = true
+description = "Versioned C ABI for Linexin Center GTK4 plugins"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,17 @@
+[package]
+name = "linexin-demo"
+version.workspace = true
+edition.workspace = true
+description = "Example native widget for Linexin Center"
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "linexin_demo"
+crate-type = ["cdylib"]
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10" }
+linexin-lxb = { path = "../../crates/lxb" }
+linexin-plugin-api = { path = "../../crates/plugin-api" }

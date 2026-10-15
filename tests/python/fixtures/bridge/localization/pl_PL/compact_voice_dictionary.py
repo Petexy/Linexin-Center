@@ -1,0 +1,3 @@
+translations = {
+    "Hello": "Cześć (głos)",
+}
