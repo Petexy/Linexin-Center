@@ -30,6 +30,11 @@ depends=(
 # open) a LineXinBar session gets the GTK window like any other desktop.
 optdepends=('lxb-toolkit: the LineXinBar front end on LineXinBar sessions (liblxb_app.so)')
 makedepends=('cargo' 'python')
+# No makepkg LTO: it compiles the C code some Rust crates build (ring, the
+# TLS library's crypto) into GCC bytecode the Rust linker cannot use, leaving
+# those symbols undefined in the built library, which then fails to load.
+# Rust's own optimisation is set in Cargo.toml.
+options=('!lto')
 
 _root="$(realpath "$startdir/..")"
 
